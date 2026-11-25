@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as maplibregl from 'maplibre-gl';
-import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import { DriverCockpitOverlay } from './components/DriverCockpitOverlay';
 import { RacingHud } from './components/RacingHud';
 import {
   ALICANTE_LANDMARKS,
   CAR_PAINT_PRESETS,
   INITIAL_VIEW,
-  OPENFREEMAP_STYLE_URL,
 } from './game/constants';
 import {
   createInitialCarState,
@@ -15,8 +12,9 @@ import {
   stepCarPhysics,
 } from './game/carPhysics';
 import { EngineAudioSynth } from './game/engineAudio';
-import { applyMapAtmosphere, getSkyBackdropCss } from './map/atmosphereStyler';
-import { CarCustomLayer } from './scene/CarCustomLayer';
+import { getSkyBackdropCss } from './map/atmosphereStyler';
+import { WorldScene } from './world/WorldScene';
+import { toLocal } from './world/geo';
 import type {
   AtmosphereMode,
   CameraPreset,
@@ -55,67 +53,9 @@ function dampAngleDeg(current: number, target: number, lambda: number, dt: numbe
   return (current + diff + 360) % 360;
 }
 
-const CAMERA_CONFIG: Record<
-  CameraPreset,
-  {
-    baseZoom: number;
-    speedZoomDrop: number;
-    basePitch: number;
-    speedPitchAdd: number;
-    leadBase: number;
-    leadSpeedFactor: number;
-    bearingLambda: number;
-  }
-> = {
-  // 1) Tercera Persona (Persecución): baja y pegada al coche
-  chase: {
-    baseZoom: INITIAL_VIEW.zoom, // 19.6
-    speedZoomDrop: 0.72,
-    basePitch: INITIAL_VIEW.pitch, // 74
-    speedPitchAdd: 5.5,
-    leadBase: 5.5,
-    leadSpeedFactor: 0.25,
-    bearingLambda: 5.4,
-  },
-  // 2) Modo Conductor (Cockpit): a ras de carretera mirando hacia delante
-  driver: {
-    baseZoom: 21.2,
-    speedZoomDrop: 0.28,
-    basePitch: 83,
-    speedPitchAdd: 1.5,
-    leadBase: 14.5,
-    leadSpeedFactor: 0.18,
-    bearingLambda: 13.0,
-  },
-  // 3) Vista Aérea / Drone
-  aerial: {
-    baseZoom: 18.2,
-    speedZoomDrop: 0.65,
-    basePitch: 50,
-    speedPitchAdd: 5.0,
-    leadBase: 6.0,
-    leadSpeedFactor: 0.26,
-    bearingLambda: 4.5,
-  },
-};
-
-function computeCameraTargetLngLat(
-  lng: number,
-  lat: number,
-  headingDeg: number,
-  leadMeters: number
-): [number, number] {
-  const headingRad = headingDeg * DEG_TO_RAD;
-  const metersPerDegLng = METERS_PER_DEG_LAT * Math.cos(lat * DEG_TO_RAD);
-  const targetLat = lat + (Math.cos(headingRad) * leadMeters) / METERS_PER_DEG_LAT;
-  const targetLng = lng + (Math.sin(headingRad) * leadMeters) / metersPerDegLng;
-  return [targetLng, targetLat]; // Strict [lng, lat] order for MapLibre
-}
-
 export default function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<maplibregl.Map | null>(null);
-  const carLayerRef = useRef<CarCustomLayer | null>(null);
+  const worldRef = useRef<WorldScene | null>(null);
   const audioRef = useRef<EngineAudioSynth | null>(null);
 
   const carStateRef = useRef<CarState>(
@@ -129,24 +69,9 @@ export default function App() {
     handbrake: false,
   });
 
-  const [initialCamLng, initialCamLat] = computeCameraTargetLngLat(
-    INITIAL_VIEW.lng,
-    INITIAL_VIEW.lat,
-    INITIAL_VIEW.bearing,
-    CAMERA_CONFIG.chase.leadBase
-  );
-
-  const camStateRef = useRef({
-    lng: initialCamLng,
-    lat: initialCamLat,
-    bearing: INITIAL_VIEW.bearing,
-    zoom: INITIAL_VIEW.zoom,
-    pitch: INITIAL_VIEW.pitch,
-  });
-
   const tileHealthRef = useRef<{ status: 'loading' | 'ready' | 'error'; text: string }>({
     status: 'loading',
-    text: 'Cargando teselas…',
+    text: 'Cargando mundo 3D…',
   });
 
   const [atmosphere, setAtmosphere] = useState<AtmosphereMode>('sunset');
@@ -173,50 +98,25 @@ export default function App() {
     lat: INITIAL_VIEW.lat,
     lng: INITIAL_VIEW.lng,
     tilesStatus: 'loading',
-    tileStatusText: 'Cargando teselas…',
+    tileStatusText: 'Cargando mundo 3D…',
   });
 
   const applyAtmosphereMode = useCallback((nextMode: AtmosphereMode) => {
     atmosphereRef.current = nextMode;
     setAtmosphere(nextMode);
-    if (mapRef.current) {
-      applyMapAtmosphere(mapRef.current, nextMode, carLayerRef.current?.id);
-    }
-    carLayerRef.current?.setAtmosphere(nextMode);
+    worldRef.current?.setAtmosphere(nextMode);
   }, []);
 
   const handlePaintChange = useCallback((nextPaint: CarPaintPreset) => {
     setPaint(nextPaint);
-    carLayerRef.current?.setPaint(nextPaint);
+    worldRef.current?.setPaint(nextPaint);
   }, []);
 
   const teleportToLandmark = useCallback((landmark: LandmarkPreset) => {
     setCurrentLandmarkId(landmark.id);
     carStateRef.current = createInitialCarState(landmark.lat, landmark.lng, landmark.bearing);
 
-    const cfg = CAMERA_CONFIG[cameraPresetRef.current];
-    const [camLng, camLat] = computeCameraTargetLngLat(
-      landmark.lng,
-      landmark.lat,
-      landmark.bearing,
-      cfg.leadBase
-    );
-
-    camStateRef.current = {
-      lng: camLng,
-      lat: camLat,
-      bearing: landmark.bearing,
-      zoom: cfg.baseZoom,
-      pitch: cfg.basePitch,
-    };
-
-    // Strict [lng, lat] center order
-    mapRef.current?.jumpTo({
-      center: [camLng, camLat],
-      bearing: landmark.bearing,
-      zoom: cfg.baseZoom,
-      pitch: cfg.basePitch,
-    });
+    worldRef.current?.snapCamera();
   }, []);
 
   const handleReset = useCallback(() => {
@@ -230,7 +130,7 @@ export default function App() {
       const order: CameraPreset[] = ['chase', 'driver', 'aerial'];
       const next = order[(order.indexOf(prev) + 1) % order.length];
       cameraPresetRef.current = next;
-      carLayerRef.current?.setBodyVisible(next !== 'driver');
+      worldRef.current?.setCameraPreset(next);
       return next;
     });
   }, []);
@@ -323,138 +223,44 @@ export default function App() {
     };
   }, [applyAtmosphereMode, handleCycleCamera, handleReset]);
 
-  // Mount MapLibre GL JS + Three.js Custom Layer + Driving/Chase-Cam Loop once
+  // Escena Three.js propia (mundo .glb + coche + colisiones) y bucle de juego
   useEffect(() => {
     const container = mapContainerRef.current;
     if (!container) return;
 
     const isSoftwareGl = detectSoftwareWebGL();
-    const initCam = camStateRef.current;
+    const world = new WorldScene(container, CAR_PAINT_PRESETS[0], atmosphereRef.current, isSoftwareGl);
+    worldRef.current = world;
+    (window as unknown as { __world?: WorldScene }).__world = world;
 
-    // Explicit Vite ?url worker path so Vite 8 never breaks MapLibre's internal Web Worker
-    maplibregl.setWorkerUrl(maplibreWorkerUrl);
-
-    // STRICT [lng, lat] order: [-0.4820, 38.3432] for Paseo Mártires / Explanada de Alicante
-    const map = new maplibregl.Map({
-      container,
-      style: OPENFREEMAP_STYLE_URL,
-      center: [initCam.lng, initCam.lat],
-      zoom: initCam.zoom,
-      pitch: initCam.pitch,
-      bearing: initCam.bearing,
-      maxPitch: 85,
-      minZoom: 14,
-      maxZoom: 22,
-      interactive: false,
-      canvasContextAttributes: { antialias: !isSoftwareGl },
-      pixelRatio: isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2),
-      attributionControl: { compact: true },
-    });
-
-    mapRef.current = map;
-
-    const carLayer = new CarCustomLayer(carStateRef, CAR_PAINT_PRESETS[0], atmosphereRef.current);
-    carLayerRef.current = carLayer;
-
-    const canvas = map.getCanvas();
+    const canvas = world.renderer.domElement;
     const onContextLost = (ev: Event) => {
       ev.preventDefault();
       setWebglLost(true);
     };
-    const onContextRestored = () => {
-      setWebglLost(false);
-    };
+    const onContextRestored = () => setWebglLost(false);
     canvas.addEventListener('webglcontextlost', onContextLost);
     canvas.addEventListener('webglcontextrestored', onContextRestored);
 
-    let styleInitialized = false;
+    let disposed = false;
+    world
+      .loadWorld(import.meta.env.BASE_URL)
+      .then(() => {
+        if (disposed) return;
+        // si el punto de salida cae dentro de un edificio, lo saca
+        world.collision?.resolve(carStateRef.current);
+        tileHealthRef.current = { status: 'ready', text: 'Mundo 3D OK' };
+        setMapReady(true);
+      })
+      .catch((err) => {
+        console.warn('[Alicante GT] Error cargando el mundo 3D:', err);
+        tileHealthRef.current = { status: 'error', text: 'Error cargando el mundo' };
+        setMapReady(true);
+      });
 
-    map.on('style.load', () => {
-      styleInitialized = true;
-      const audit = applyMapAtmosphere(map, atmosphereRef.current, carLayer.id);
-      // Add Three.js 3D CustomLayer last (no beforeId) so it always renders above roads cleanly
-      if (!map.getLayer(carLayer.id)) {
-        map.addLayer(carLayer);
-      }
-      carLayer.setBodyVisible(cameraPresetRef.current !== 'driver');
-      console.info(
-        `[Alicante GT] Estilo OpenFreeMap cargado en [lng=${INITIAL_VIEW.lng}, lat=${INITIAL_VIEW.lat}] | ` +
-          `Edificios 3D: ${audit.buildingLayerId} | Capas de calles visibles: ${audit.roadLayersVisible} | Agua visible: ${audit.waterLayerVisible}`
-      );
-      setMapReady(true);
-    });
-
-    map.on('sourcedata', (ev) => {
-      if (ev.sourceId === 'openmaptiles' && ev.isSourceLoaded && tileHealthRef.current.status !== 'ready') {
-        tileHealthRef.current = { status: 'ready', text: 'Teselas vectoriales OK' };
-        console.info(
-          `[Alicante GT] Teselas vectoriales openmaptiles cargadas sin errores en [lng=${carStateRef.current.lng.toFixed(4)}, lat=${carStateRef.current.lat.toFixed(4)}]`
-        );
-      }
-    });
-
-    map.on('load', () => {
-      if (tileHealthRef.current.status === 'loading') {
-        tileHealthRef.current = { status: 'ready', text: 'Teselas vectoriales OK' };
-      }
-      console.info(
-        `[Alicante GT] Mapa listo | Centro [lng=${map.getCenter().lng.toFixed(4)}, lat=${map.getCenter().lat.toFixed(4)}] | Zoom ${map.getZoom().toFixed(2)} | Pitch ${map.getPitch().toFixed(1)}°`
-      );
-      setMapReady(true);
-    });
-
-    map.on('styleimagemissing', () => {
-      // POI/icon symbol layers are intentionally hidden for a clean racing view
-    });
-
-    map.on('error', (ev) => {
-      const msg = ev?.error?.message || 'Error al cargar teselas';
-      console.warn('[Alicante GT] Error de MapLibre:', msg, ev);
-      if (tileHealthRef.current.status !== 'ready') {
-        tileHealthRef.current = { status: 'error', text: 'Error en teselas' };
-      }
-    });
-
-    const readyTimer = window.setTimeout(() => setMapReady(true), 4500);
-
-    // Smooth third-person chase camera & physics animation loop
     let frameId = 0;
     let lastTime = performance.now();
     let lastHudUpdate = 0;
-    let disposed = false;
-
-    const scheduleNext = (cb: () => void) => {
-      if (disposed) return;
-      if (isSoftwareGl) {
-        try {
-          const gl = canvas.getContext('webgl2') as WebGL2RenderingContext | null;
-          if (gl && typeof gl.fenceSync === 'function') {
-            const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-            gl.flush();
-            const poll = () => {
-              if (disposed) {
-                if (sync) gl.deleteSync(sync);
-                return;
-              }
-              const status = sync ? gl.getSyncParameter(sync, gl.SYNC_STATUS) : gl.SIGNALED;
-              if (status === gl.UNSIGNALED) {
-                frameId = window.setTimeout(poll, 8);
-              } else {
-                if (sync) gl.deleteSync(sync);
-                frameId = window.setTimeout(cb, 65);
-              }
-            };
-            frameId = window.setTimeout(poll, 8);
-            return;
-          }
-        } catch {
-          // fall through
-        }
-        frameId = window.setTimeout(cb, 80);
-      } else {
-        frameId = requestAnimationFrame(cb);
-      }
-    };
 
     const tick = () => {
       if (disposed) return;
@@ -466,81 +272,15 @@ export default function App() {
       const input = controlsRef.current;
 
       stepCarPhysics(state, input, dt);
+      world.collision?.resolve(state);
 
       if (audioRef.current) {
         audioRef.current.update(state.rpm, state.speedKmh, state.driftIntensity, input.throttle);
       }
 
-      // Compute dynamic chase / cockpit / aerial camera target
-      const cfg = CAMERA_CONFIG[cameraPresetRef.current];
-      const isDriverMode = cameraPresetRef.current === 'driver';
-      const speedNorm = Math.min(Math.abs(state.speedMps) / 56, 1);
+      world.render(state, dt);
 
-      const camFollowLambda = isDriverMode
-        ? cfg.bearingLambda
-        : state.isDrifting
-          ? 3.2
-          : cfg.bearingLambda;
-      const cam = camStateRef.current;
-      const prevLng = cam.lng;
-      const prevLat = cam.lat;
-      const prevBearing = cam.bearing;
-      const prevZoom = cam.zoom;
-      const prevPitch = cam.pitch;
-
-      cam.bearing = dampAngleDeg(cam.bearing, state.headingDeg, camFollowLambda, dt);
-
-      const leadMeters = cfg.leadBase + Math.max(0, state.speedMps) * cfg.leadSpeedFactor;
-      const [targetLng, targetLat] = computeCameraTargetLngLat(
-        state.lng,
-        state.lat,
-        state.headingDeg,
-        leadMeters
-      );
-
-      const posLambda = isDriverMode ? 18.0 : 9.5;
-      cam.lng = damp(cam.lng, targetLng, posLambda, dt);
-      cam.lat = damp(cam.lat, targetLat, posLambda, dt);
-
-      const targetZoom = cfg.baseZoom - speedNorm * cfg.speedZoomDrop;
-      const targetPitch = Math.min(84.5, cfg.basePitch + speedNorm * cfg.speedPitchAdd);
-
-      cam.zoom = damp(cam.zoom, targetZoom, 5.5, dt);
-      cam.pitch = damp(cam.pitch, targetPitch, 5.5, dt);
-
-      const cameraMoved =
-        Math.abs(cam.lng - prevLng) > 1e-7 ||
-        Math.abs(cam.lat - prevLat) > 1e-7 ||
-        Math.abs(cam.bearing - prevBearing) > 0.01 ||
-        Math.abs(cam.zoom - prevZoom) > 0.001 ||
-        Math.abs(cam.pitch - prevPitch) > 0.01;
-
-      const carActive =
-        Math.abs(state.speedMps) > 0.05 ||
-        Math.abs(state.steerAngleRad) > 0.01 ||
-        state.brakeIntensity > 0.02 ||
-        input.left ||
-        input.right ||
-        input.throttle ||
-        input.brake ||
-        input.handbrake;
-
-      if (styleInitialized) {
-        if (cameraMoved) {
-          // STRICT [lng, lat] order
-          map.jumpTo({
-            center: [cam.lng, cam.lat],
-            bearing: cam.bearing,
-            zoom: cam.zoom,
-            pitch: cam.pitch,
-          });
-        }
-        if (cameraMoved || carActive) {
-          map.triggerRepaint();
-        }
-      }
-
-      // Throttle React HUD state updates (~20 Hz)
+      // HUD de React a ~20 Hz
       if (now - lastHudUpdate > 50) {
         lastHudUpdate = now;
         setTelemetry({
@@ -558,23 +298,22 @@ export default function App() {
         });
       }
 
-      scheduleNext(tick);
+      frameId = requestAnimationFrame(tick);
     };
+    frameId = requestAnimationFrame(tick);
 
-    scheduleNext(tick);
+    const readyTimer = window.setTimeout(() => setMapReady(true), 15000);
 
     return () => {
       disposed = true;
       window.clearTimeout(readyTimer);
       cancelAnimationFrame(frameId);
-      window.clearTimeout(frameId);
       canvas.removeEventListener('webglcontextlost', onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
       audioRef.current?.dispose();
       audioRef.current = null;
-      map.remove();
-      mapRef.current = null;
-      carLayerRef.current = null;
+      world.dispose();
+      worldRef.current = null;
     };
   }, []);
 
@@ -583,11 +322,11 @@ export default function App() {
       className="relative h-full w-full overflow-hidden"
       style={{ background: getSkyBackdropCss(atmosphere) }}
     >
-      {/* Isolated MapLibre GL + Three.js WebGL Viewport */}
+      {/* Viewport WebGL (Three.js) */}
       <div
         ref={mapContainerRef}
         className="h-full w-full"
-        aria-label="Mapa 3D interactivo de Alicante con coche deportivo"
+        aria-label="Alicante en 3D con coche deportivo"
       />
 
       {/* Polished Initialization Scrim */}
@@ -601,7 +340,7 @@ export default function App() {
             Alicante GT
           </h2>
           <p className="mt-2 text-sm text-slate-400">
-            Cargando calles y edificios 3D de la Explanada de España, Alicante…
+            Cargando Alicante en 3D…
           </p>
         </div>
       </div>

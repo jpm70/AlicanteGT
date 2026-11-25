@@ -22,3 +22,6 @@ Thumbs.db
 # Editor directories
 .vscode/
 .idea/
+
+# Datos descargados (se regeneran con tools/fetch_osm.py)
+tools/data/
