@@ -380,7 +380,7 @@ export default function App() {
       )}
 
       <p className="pointer-events-none fixed bottom-1 right-2 z-20 text-[10px] text-white/70 [text-shadow:0_1px_2px_rgba(0,0,0,0.8)]">
-        Ortofoto © Instituto Geográfico Nacional · PNOA (CC BY 4.0) · Datos © colaboradores de OpenStreetMap · Relieve EU-DEM
+        Ortofoto © IGN · PNOA (CC BY 4.0) · Edificios © Catastro · Datos © colaboradores de OpenStreetMap · Relieve EU-DEM
       </p>
 
       {/* Semantic Motorsport HUD Overlay */}
