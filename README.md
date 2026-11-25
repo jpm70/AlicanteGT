@@ -1,6 +1,6 @@
 # Alicante GT — Carreras 3D en las calles reales de Alicante
 
-Juego de conducción 3D **100 % client-side** por el centro de **Alicante** (Explanada de España, Puerto, Postiguet, Rambla, Luceros y el Castillo de Santa Bárbara), hecho con **React**, **TypeScript**, **Tailwind CSS** y **Three.js**.
+Juego de conducción 3D **100 % client-side** por **Alicante** (Explanada de España, Puerto, Postiguet, Rambla, Luceros, Benalúa, Carolinas, el Castillo de Santa Bárbara y la zona del Hospital), hecho con **React**, **TypeScript**, **Tailwind CSS** y **Three.js**.
 
 No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generado a partir de **datos abiertos** (OpenStreetMap, EU-DEM y la ortofoto del PNOA del IGN).
 
@@ -21,7 +21,7 @@ No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generad
 - 3 cámaras: **Persecución**, **Modo Conductor** (cockpit interactivo) y **Aérea**.
 - 3 ambientes: **Atardecer Mediterráneo**, **Noche Neón** y **Día**.
 - Motor y derrape sintetizados con Web Audio (sin archivos de audio).
-- 6 puntos de salida: Explanada, Castillo, Ayuntamiento, Mercado Central, Barrio de Santa Cruz y Plaza de Luceros (más Puerto, Postiguet y Alfonso X).
+- 13 puntos de salida: Explanada, Castillo, Ayuntamiento, Mercado Central, Santa Cruz, Luceros, Concatedral, Santa María, Estación Terminal, Auditorio ADDA, Puerto, Postiguet y Alfonso X (más Puerto, Postiguet y Alfonso X).
 
 ## Controles
 
@@ -40,38 +40,42 @@ No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generad
 
 ## Cómo se genera el mundo
 
-El mundo no se descarga en tiempo de juego: se construye una vez con tres scripts de Python y se guarda en `public/world/`.
+El mundo no se descarga en tiempo de juego: se construye una vez con scripts de Python y se guarda en `public/world/`, dividido en **35 teselas de 1 km** (7 × 5, ~35 km² entre Playa de San Juan, Benalúa, Carolinas, Hospital y el Puerto). El juego carga las 9 teselas cercanas al coche y descarga las lejanas.
 
 ```bash
-pip install requests numpy shapely trimesh mapbox_earcut pyproj pygltflib pillow
+pip install requests numpy shapely trimesh mapbox_earcut pyproj pygltflib pillow osmium
 
-python tools/fetch_osm.py     # OpenStreetMap (Overpass): calles, edificios, costa, parques, árboles, farolas
-python tools/fetch_dem.py     # elevaciones EU-DEM 25 m (opentopodata.org)
-python tools/fetch_catastro.py# plantas, año y uso (Catastro INSPIRE, zip de 22 MB del municipio 03900)
-python tools/fetch_ortho.py   # ortofoto PNOA (WMS del IGN) -> public/world/ortho.jpg
-python tools/build_world.py   # genera public/world/alicante.glb y colliders.json
+# 1. OpenStreetMap: extracto de la Comunidad Valenciana (Geofabrik, ~140 MB) recortado por teselas
+curl -L -o tools/data/geofabrik/valencia.osm.pbf https://download.geofabrik.de/europe/spain/valencia-latest.osm.pbf
+python tools/pbf_to_tiles.py
+python tools/fetch_dem.py            # elevaciones EU-DEM 25 m (opentopodata.org), ~50.000 puntos
+python tools/fetch_catastro.py       # plantas, año y uso (Catastro INSPIRE, zip municipal de 22 MB)
+python tools/fetch_ortho_tiles.py    # ortofoto PNOA (WMS del IGN) por teselas
+python tools/build_tiles.py          # genera public/world/tiles/*, manifest.json y dem.json
+python tools/build_tiles.py 0,-1     # (opcional) reconstruye solo una tesela
 ```
 
-- Los datos descargados quedan en `tools/data/` (en `.gitignore`); `public/world/` sí está versionado.
-- `alicante.glb` contiene las capas `Ground`, `Park`, `Road`, `Sidewalk`, `Mosaic`, `Water`, `Walls`, `Roofs`, `Castle` y `Landmark`.
-- `colliders.json` lleva las huellas de los volúmenes de edificio, obstáculos (árboles, mar, castillo), la máscara transitable (bits a 2 m), árboles, farolas y la malla de relieve.
-- Los servidores de Overpass y del WMS del IGN fallan a ratos: los scripts guardan caché por capa y reintentan.
-- Para otra zona, cambia el recuadro en `fetch_osm.py`, la región en `fetch_dem.py` / `fetch_ortho.py` y el origen en `build_world.py`.
+- Los datos descargados quedan en `tools/data/` (en `.gitignore`); `public/world/` sí está versionado (~90 MB).
+- `tools/world_config.py` define el origen (Explanada), el tamaño de tesela y la región. Para otra zona, cambia ahí el rango `TX_RANGE`/`TZ_RANGE` y el origen.
+- Cada tesela tiene `<tx>_<tz>.glb` (capas `Ground`, `Park`, `Road`, `Sidewalk`, `Mosaic`, `Water`, `Walls`, `Roofs`, `Castle`, `Landmark`), `<tx>_<tz>.json` (huellas de edificios, obstáculos, árboles, farolas y máscara transitable a 2 m) y `<tx>_<tz>.jpg` (ortofoto: 2048 px cerca del centro, 1024 px fuera).
+- Los servidores públicos de Overpass se saturan a menudo; por eso se usa el extracto de Geofabrik. El WMS del IGN solo responde bien a algunos tamaños (640, 900, 1024, 1280 px) y el script reintenta.
 
 ## Estructura
 
 ```text
 .
 ├── tools/                      # Generación del mundo (Python)
-├── public/world/               # alicante.glb, colliders.json, ortho.jpg
+├── public/world/               # manifest.json, dem.json y tiles/ (glb + json + jpg)
 └── src/
     ├── App.tsx                 # Bucle de juego, entrada y HUD
     ├── game/                   # Física del coche, constantes, audio, cielo
-    ├── scene/createSportsCar.ts# Deportivo 3D procedimental
+    ├── scene/
+    │   ├── createSportsCar.ts  # Deportivo 3D procedimental (luces, ruedas, humo)
+    │   └── carBody.ts          # Carrocería moldeada por secciones, neumáticos y llantas
     ├── world/
-    │   ├── WorldScene.ts       # Escena Three.js: mundo, coche, cámara, luces, árboles
+    │   ├── WorldScene.ts       # Escena Three.js: teselas, coche, cámara, luces, árboles
     │   ├── facades.ts          # Atlas procedimental de fachadas y mosaico de la Explanada
-    │   ├── collision.ts        # Colisión con edificios/mar y límite de calzada
+    │   ├── collision.ts        # Colisión con edificios/mar y límite de calzada, por teselas
     │   └── geo.ts              # lat/lng ↔ metros locales y altura del terreno
     └── components/             # HUD y cockpit
 ```
@@ -97,6 +101,6 @@ SPA estática sin backend ni claves. El workflow `.github/workflows/deploy.yml` 
 
 - Ortofoto © [Instituto Geográfico Nacional de España](https://www.ign.es/) · PNOA, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es).
 - Edificios (plantas, año y uso): © [Dirección General del Catastro](https://www.catastro.hacienda.gob.es/), INSPIRE, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es).
-- Datos cartográficos © colaboradores de [OpenStreetMap](https://www.openstreetmap.org/copyright) (ODbL).
+- Datos cartográficos © colaboradores de [OpenStreetMap](https://www.openstreetmap.org/copyright) (ODbL), vía el extracto de [Geofabrik](https://download.geofabrik.de/).
 - Relieve: EU-DEM (Copernicus) vía [OpenTopoData](https://www.opentopodata.org/).
 - Código bajo licencia **MIT**: consulta [`LICENSE`](./LICENSE).

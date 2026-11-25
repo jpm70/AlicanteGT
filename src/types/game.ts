@@ -18,6 +18,8 @@ export interface LandmarkPreset {
   lat: number;
   lng: number;
   bearing: number;
+  /** Cámara con la que se llega al punto (por defecto, la actual). */
+  camera?: CameraPreset;
 }
 
 export interface ControlInput {

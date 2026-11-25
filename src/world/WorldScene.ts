@@ -6,12 +6,10 @@ import { ATMOSPHERE_SPECS } from '../game/constants';
 import type { AtmosphereMode, CameraPreset, CarPaintPreset, CarState } from '../types/game';
 import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider, type DriveMask } from './collision';
-import { heightAt, setDem, toLocal, type DemData } from './geo';
+import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
-/** Región cubierta por public/world/ortho.jpg (m locales); coincide con tools/fetch_ortho.py. */
-const ORTHO = { x0: -1148, z0: -900, w: 2048, h: 1536 };
 /** Las luces de constants.ts están pensadas para el coche solo; en un mundo claro saturan. */
 const LK = 0.5;
 const damp = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));
@@ -28,14 +26,17 @@ const CAM: Record<CameraPreset, { dist: number; height: number; look: number; fo
   aerial: { dist: 46, height: 38, look: 8, fov: 55 },
 };
 
-/** Escena Three.js propia: mundo .glb de Alicante + coche + cámara + colisiones. Sin MapLibre. */
+interface TileInfo { tx: number; tz: number; ortho: number; land: boolean }
+interface Manifest { tile: number; tx: [number, number]; tz: [number, number]; tiles: TileInfo[] }
+interface LoadedTile { key: string; group: THREE.Group; textures: THREE.Texture[]; materials: THREE.Material[] }
+
+/** Escena Three.js propia: mundo por teselas .glb de Alicante + coche + cámara + colisiones. Sin MapLibre. */
 export class WorldScene {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(62, 1, 0.3, 2500);
   readonly rig: SportsCarRig;
   collision: CollisionWorld | null = null;
-  world: THREE.Object3D | null = null;
 
   private key: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
@@ -44,7 +45,17 @@ export class WorldScene {
   private preset: CameraPreset = 'chase';
   private camBearing = 0;
   private camSnap = true;
-  private ortho: THREE.Texture | null = null;
+  private base = '/';
+  private manifest: Manifest | null = null;
+  private infos = new Map<string, TileInfo>();
+  private tiles = new Map<string, LoadedTile>();
+  private loading = new Set<string>();
+  private lastTileKey = '';
+  private wallMat: THREE.MeshStandardMaterial | null = null;
+  private mosaicMat: THREE.MeshStandardMaterial | null = null;
+  private plainMats: Record<string, THREE.MeshStandardMaterial> = {};
+  private loader = new GLTFLoader();
+  public loadedCount = 0;
   private groundPitch = 0;
   private groundRoll = 0;
   private camGround = 0;
@@ -104,89 +115,156 @@ export class WorldScene {
     this.resize();
   }
 
-  /** Carga el .glb del mundo y los colisionadores. */
-  async loadWorld(base: string, onProgress?: (t: string) => void): Promise<void> {
-    onProgress?.('Descargando Alicante 3D…');
-    const loader = new GLTFLoader();
-    const [gltf, col, ortho] = await Promise.all([
-      loader.loadAsync(`${base}world/alicante.glb`),
-      fetch(`${base}world/colliders.json`).then((r) => r.json()),
-      new THREE.TextureLoader().loadAsync(`${base}world/ortho.jpg`).catch(() => null),
+  /** Carga el manifiesto y el relieve global, y deja lista la tesela donde está el coche. */
+  async init(base: string, startX: number, startZ: number, onProgress?: (t: string) => void): Promise<void> {
+    this.base = base;
+    onProgress?.('Descargando el mapa de Alicante…');
+    const [manifest, dem] = await Promise.all([
+      fetch(`${base}world/manifest.json`).then((r) => r.json() as Promise<Manifest>),
+      fetch(`${base}world/dem.json`).then((r) => r.json() as Promise<DemData>),
     ]);
-    if (ortho) {
-      // GPU con límite de textura menor que 4096 px: se reduce la ortofoto para que no falle
-      const maxTex = this.renderer.capabilities.maxTextureSize;
-      const img = ortho.image as HTMLImageElement;
-      if (img.width > maxTex) {
-        const k = maxTex / img.width;
-        const cv = document.createElement('canvas');
-        cv.width = Math.floor(img.width * k);
-        cv.height = Math.floor(img.height * k);
-        cv.getContext('2d')!.drawImage(img, 0, 0, cv.width, cv.height);
-        ortho.image = cv as unknown as HTMLImageElement;
-        ortho.needsUpdate = true;
-      }
-      ortho.colorSpace = THREE.SRGBColorSpace;
-      ortho.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
-      ortho.wrapS = ortho.wrapT = THREE.ClampToEdgeWrapping;
-      this.ortho = ortho;
+    this.manifest = manifest;
+    for (const t of manifest.tiles) this.infos.set(`${t.tx}_${t.tz}`, t);
+    setDem(dem);
+    this.collision = new CollisionWorld();
+    this.collision.setBounds(manifest.tx[0] * TILE, manifest.tz[0] * TILE, (manifest.tx[1] + 1) * TILE, (manifest.tz[1] + 1) * TILE);
+    onProgress?.('Cargando el barrio…');
+    await this.ensureTile(Math.floor(startX / TILE), Math.floor(startZ / TILE));
+    this.streamTiles(startX, startZ);
+    onProgress?.(`Mundo listo · ${this.loadedCount} teselas`);
+  }
+
+  private async ensureTile(tx: number, tz: number): Promise<void> {
+    const key = `${tx}_${tz}`;
+    const info = this.infos.get(key);
+    if (!info || this.tiles.has(key)) return;
+    if (this.loading.has(key)) {
+      while (this.loading.has(key)) await new Promise((r) => setTimeout(r, 60));
+      return;
     }
-    this.world = gltf.scene;
-    gltf.scene.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (!m.isMesh) return;
-      const n = o.name;
-      // los colores del GLB están en sRGB; Three espera lineal en COLOR_0
-      const ca = m.geometry.getAttribute('color');
-      if (ca) {
-        const c = new THREE.Color();
-        for (let i = 0; i < ca.count; i++) {
-          c.setRGB(ca.getX(i), ca.getY(i), ca.getZ(i), THREE.SRGBColorSpace);
-          ca.setXYZ(i, c.r, c.g, c.b);
+    this.loading.add(key);
+    try {
+      const [gltf, col, ortho] = await Promise.all([
+        this.loader.loadAsync(`${this.base}world/tiles/${key}.glb`),
+        fetch(`${this.base}world/tiles/${key}.json`).then((r) => r.json()),
+        info.ortho > 0 ? new THREE.TextureLoader().loadAsync(`${this.base}world/tiles/${key}.jpg`).catch(() => null) : Promise.resolve(null),
+      ]);
+      if (this.tiles.has(key)) return;
+      const lt: LoadedTile = { key, group: new THREE.Group(), textures: [], materials: [] };
+      let orthoTex: THREE.Texture | null = null;
+      if (ortho) {
+        const maxTex = this.renderer.capabilities.maxTextureSize;
+        const img = ortho.image as HTMLImageElement;
+        if (img.width > maxTex) {   // GPU con límite de textura bajo: se reduce al cargar
+          const k = maxTex / img.width;
+          const cv = document.createElement('canvas');
+          cv.width = Math.floor(img.width * k);
+          cv.height = Math.floor(img.height * k);
+          cv.getContext('2d')!.drawImage(img, 0, 0, cv.width, cv.height);
+          ortho.image = cv as unknown as HTMLImageElement;
+          ortho.needsUpdate = true;
         }
-        ca.needsUpdate = true;
+        ortho.colorSpace = THREE.SRGBColorSpace;
+        ortho.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+        ortho.wrapS = ortho.wrapT = THREE.ClampToEdgeWrapping;
+        orthoTex = ortho;
+        lt.textures.push(ortho);
       }
-      m.receiveShadow = true;
-      m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle' || n === 'Landmark';
       const orthoMix: Record<string, number> = { Ground: 0.92, Road: 0.95, Sidewalk: 0.9, Park: 0.8, Water: 0.8 };
-      m.material = this.ortho && n in orthoMix
-        ? this.makeOrthoMaterial(n, orthoMix[n])
-        : n === 'Walls'
-        ? this.makeWallMaterial()
-        : n === 'Mosaic'
-          ? new THREE.MeshStandardMaterial({ map: createMosaicTexture(), roughness: 0.6, metalness: 0.05 })
-          : new THREE.MeshStandardMaterial({
+      gltf.scene.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const n = o.name;
+        const ca = m.geometry.getAttribute('color');   // los colores del GLB están en sRGB; Three espera lineal en COLOR_0
+        if (ca) {
+          const c = new THREE.Color();
+          for (let i = 0; i < ca.count; i++) {
+            c.setRGB(ca.getX(i), ca.getY(i), ca.getZ(i), THREE.SRGBColorSpace);
+            ca.setXYZ(i, c.r, c.g, c.b);
+          }
+          ca.needsUpdate = true;
+        }
+        m.receiveShadow = n !== 'Water';
+        m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle' || n === 'Landmark';
+        if (orthoTex && n in orthoMix) {
+          const mat = this.makeOrthoMaterial(n, orthoMix[n], orthoTex, info);
+          lt.materials.push(mat);
+          m.material = mat;
+        } else if (n === 'Walls') {
+          m.material = this.wallMat ??= this.makeWallMaterial();
+        } else if (n === 'Mosaic') {
+          m.material = this.mosaicMat ??= new THREE.MeshStandardMaterial({ map: createMosaicTexture(), roughness: 0.6, metalness: 0.05 });
+        } else {
+          m.material = this.plainMats[n] ??= new THREE.MeshStandardMaterial({
             vertexColors: true,
             flatShading: true,
             roughness: n === 'Road' ? 0.92 : n === 'Water' ? 0.12 : 0.85,
             metalness: n === 'Water' ? 0.25 : 0,
           });
-      if (n === 'Water') m.receiveShadow = false;
+        }
+      });
+      lt.group.add(gltf.scene);
+      this.addTrees(lt, (col.trees ?? []) as [number, number, number][]);
+      this.addLamps(lt, (col.lamps ?? []) as [number, number, number][]);
+      this.scene.add(lt.group);
+      this.tiles.set(key, lt);
+      this.collision?.addTile(
+        key,
+        [...(col.buildings as BuildingCollider[]), ...((col.obstacles ?? []) as BuildingCollider[])],
+        (col.drive ?? null) as DriveMask | null
+      );
+      this.loadedCount = this.tiles.size;
+    } finally {
+      this.loading.delete(key);
+    }
+  }
+
+  private unloadTile(key: string) {
+    const lt = this.tiles.get(key);
+    if (!lt) return;
+    this.scene.remove(lt.group);
+    lt.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
     });
-    this.scene.add(gltf.scene);
-    setDem((col.dem ?? null) as DemData | null);
-    this.collision = new CollisionWorld([
-      ...(col.buildings as BuildingCollider[]),
-      ...((col.obstacles ?? []) as BuildingCollider[]),
-    ]);
-    this.collision.setDrive((col.drive ?? null) as DriveMask | null);
-    this.addTrees((col.trees ?? []) as [number, number, number][]);
-    this.addLamps((col.lamps ?? []) as [number, number, number][]);
-    onProgress?.(`Mundo listo · ${this.collision.count} edificios`);
+    lt.textures.forEach((t) => t.dispose());
+    lt.materials.forEach((m) => m.dispose());
+    this.collision?.removeTile(key);
+    this.tiles.delete(key);
+    this.loadedCount = this.tiles.size;
+  }
+
+  /** Carga las teselas alrededor del coche y descarga las lejanas. */
+  private streamTiles(x: number, z: number) {
+    const tx = Math.floor(x / TILE), tz = Math.floor(z / TILE);
+    const key = `${tx}_${tz}`;
+    if (key === this.lastTileKey) return;
+    this.lastTileKey = key;
+    const want: [number, number][] = [];
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) want.push([tx + dx, tz + dz]);
+    want.sort((a, b) => Math.hypot(a[0] - tx, a[1] - tz) - Math.hypot(b[0] - tx, b[1] - tz));
+    (async () => {
+      for (const [a, b] of want) {
+        try { await this.ensureTile(a, b); } catch (err) { console.warn('[Alicante GT] tesela', a, b, err); }
+      }
+    })();
+    for (const k of [...this.tiles.keys()]) {
+      const [a, b] = k.split('_').map(Number);
+      if (Math.abs(a - tx) > 2 || Math.abs(b - tz) > 2) this.unloadTile(k);
+    }
   }
 
   /** Suelo/calzada/mar: color de vértice mezclado con la ortofoto del PNOA (mapeo plano en x,z). */
-  private makeOrthoMaterial(name: string, mix: number): THREE.MeshStandardMaterial {
+  private makeOrthoMaterial(name: string, mix: number, tex: THREE.Texture, info: TileInfo): THREE.MeshStandardMaterial {
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       flatShading: true,
       roughness: name === 'Road' ? 0.92 : name === 'Water' ? 0.15 : 0.88,
       metalness: name === 'Water' ? 0.2 : 0,
     });
-    const tex = this.ortho!;
     mat.onBeforeCompile = (sh) => {
       sh.uniforms.uOrtho = { value: tex };
-      sh.uniforms.uOB = { value: new THREE.Vector4(ORTHO.x0, ORTHO.z0, ORTHO.w, ORTHO.h) };
+      sh.uniforms.uOB = { value: new THREE.Vector4(info.tx * TILE, info.tz * TILE, TILE, TILE) };
       sh.uniforms.uOMix = { value: mix };
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vOXZ;')
@@ -237,18 +315,19 @@ export class WorldScene {
   }
 
   /** Farolas y semáforos instanciados. */
-  private addLamps(lamps: [number, number, number][]) {
+  private addLamps(lt: LoadedTile, lamps: [number, number, number][]) {
     const poles = lamps.filter((l) => l[2] === 0);
     const sigs = lamps.filter((l) => l[2] === 1);
     const metal = new THREE.MeshStandardMaterial({ color: 0x2c2f34, roughness: 0.6, metalness: 0.5 });
     const glow = new THREE.MeshStandardMaterial({ color: 0xffe2a8, emissive: 0xffd48a, emissiveIntensity: 0.6, roughness: 0.4 });
+    lt.materials.push(metal, glow);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const one = new THREE.Vector3(1, 1, 1);
     const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, n: number) => {
       const im = new THREE.InstancedMesh(geo, mat, Math.max(n, 1));
       im.frustumCulled = false;
-      this.scene.add(im);
+      lt.group.add(im);
       return im;
     };
     const pp = mk(new THREE.CylinderGeometry(0.07, 0.1, 6, 6), metal, poles.length);
@@ -269,19 +348,20 @@ export class WorldScene {
   }
 
   /** Árboles y palmeras instanciados (posiciones reales de OSM). */
-  private addTrees(trees: [number, number, number][]) {
+  private addTrees(lt: LoadedTile, trees: [number, number, number][]) {
     const palms = trees.filter((t) => t[2] === 1);
     const broad = trees.filter((t) => t[2] === 0);
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f35, roughness: 0.95 });
     const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.9 });
     const frondMat = new THREE.MeshStandardMaterial({ color: 0x4f8f3c, roughness: 0.85, side: THREE.DoubleSide });
+    lt.materials.push(trunkMat, leafMat, frondMat);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, n: number) => {
       const im = new THREE.InstancedMesh(geo, mat, Math.max(n, 1));
       im.castShadow = true;
       im.frustumCulled = false;
-      this.scene.add(im);
+      lt.group.add(im);
       return im;
     };
     // árboles de hoja ancha: tronco + copa
@@ -366,6 +446,7 @@ export class WorldScene {
   /** Dibuja un frame: coloca el coche y la cámara según el estado. */
   render(state: CarState, dt: number) {
     const p = toLocal(state.lat, state.lng);
+    if (this.manifest) this.streamTiles(p.x, p.z);
     this.rig.updateFromState(state, dt);
     const gy = heightAt(p.x, p.z);
     const hd = state.headingDeg * DEG;

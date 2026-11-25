@@ -1,4 +1,4 @@
-import { toLatLng, toLocal } from './geo';
+import { TILE, toLatLng, toLocal } from './geo';
 import type { CarState } from '../types/game';
 
 export interface BuildingCollider {
@@ -20,32 +20,70 @@ export interface DriveMask { x0: number; z0: number; cell: number; nx: number; n
 /** Esquinas del coche (m): delante/detrás x izquierda/derecha. */
 const CORNERS: [number, number][] = [[1.0, 2.3], [-1.0, 2.3], [1.0, -2.3], [-1.0, -2.3]];
 
+interface TileData {
+  grid: Map<string, Prepared[]>;
+  drive: Uint8Array | null;
+  dm: DriveMask | null;
+  count: number;
+}
+
 export class CollisionWorld {
-  private drive: Uint8Array | null = null;
-  private dm: DriveMask | null = null;
+  private tiles = new Map<string, TileData>();
+  private bounds: [number, number, number, number] | null = null;
   private lastX = 0;
   private lastZ = 0;
   private hasLast = false;
-
-  private grid = new Map<string, Prepared[]>();
   public count = 0;
 
-  setDrive(d: DriveMask | null) {
-    this.dm = d;
-    if (!d) { this.drive = null; return; }
-    const bin = atob(d.bits);
-    this.drive = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) this.drive[i] = bin.charCodeAt(i);
+  /** Región total del mundo (m): fuera de ella no se puede conducir. */
+  setBounds(x0: number, z0: number, x1: number, z1: number) { this.bounds = [x0, z0, x1, z1]; }
+
+  addTile(key: string, buildings: BuildingCollider[], drive: DriveMask | null) {
+    this.removeTile(key);
+    const td: TileData = { grid: new Map(), drive: null, dm: drive, count: 0 };
+    if (drive) {
+      const bin = atob(drive.bits);
+      td.drive = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) td.drive[i] = bin.charCodeAt(i);
+    }
+    for (const b of buildings) {
+      const pts = b.p;
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const [x, z] of pts) {
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      }
+      const prep: Prepared = { pts, minX, maxX, minZ, maxZ };
+      for (let cx = Math.floor(minX / CELL); cx <= Math.floor(maxX / CELL); cx++)
+        for (let cz = Math.floor(minZ / CELL); cz <= Math.floor(maxZ / CELL); cz++) {
+          const k = cx + ',' + cz;
+          const arr = td.grid.get(k);
+          if (arr) arr.push(prep); else td.grid.set(k, [prep]);
+        }
+      td.count++;
+    }
+    this.tiles.set(key, td);
+    this.count += td.count;
   }
 
-  /** ¿Se puede conducir en (x, z)? Fuera del mapa o sin máscara = sí. */
+  removeTile(key: string) {
+    const t = this.tiles.get(key);
+    if (!t) return;
+    this.count -= t.count;
+    this.tiles.delete(key);
+  }
+
+  /** ¿Se puede conducir en (x, z)? Fuera del mundo = no; teselas aún sin cargar = sí (hueco breve). */
   private canDrive(x: number, z: number): boolean {
-    const d = this.dm;
-    if (!d || !this.drive) return true;
+    const bd = this.bounds;
+    if (bd && (x < bd[0] || z < bd[1] || x >= bd[2] || z >= bd[3])) return false;
+    const t = this.tiles.get(Math.floor(x / TILE) + '_' + Math.floor(z / TILE));
+    if (!t || !t.dm || !t.drive) return true;
+    const d = t.dm;
     const ix = Math.floor((x - d.x0) / d.cell), iz = Math.floor((z - d.z0) / d.cell);
     if (ix < 0 || iz < 0 || ix >= d.nx || iz >= d.nz) return true;
     const k = iz * d.nx + ix;
-    return ((this.drive[k >> 3] >> (7 - (k & 7))) & 1) === 1;
+    return ((t.drive[k >> 3] >> (7 - (k & 7))) & 1) === 1;
   }
 
   private carFits(x: number, z: number, hd: number): boolean {
@@ -74,32 +112,17 @@ export class CollisionWorld {
 
   reset() { this.hasLast = false; }
 
-  constructor(buildings: BuildingCollider[]) {
-    for (const b of buildings) {
-      const pts = b.p;
-      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-      for (const [x, z] of pts) {
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-      }
-      const prep: Prepared = { pts, minX, maxX, minZ, maxZ };
-      for (let cx = Math.floor(minX / CELL); cx <= Math.floor(maxX / CELL); cx++)
-        for (let cz = Math.floor(minZ / CELL); cz <= Math.floor(maxZ / CELL); cz++) {
-          const k = cx + ',' + cz;
-          const arr = this.grid.get(k);
-          if (arr) arr.push(prep); else this.grid.set(k, [prep]);
-        }
-      this.count++;
-    }
-  }
-
   /** Empuja un círculo fuera de los edificios. Devuelve la normal del mayor impacto (o null). */
   private pushOut(pos: { x: number; z: number }, r: number): { nx: number; nz: number; depth: number } | null {
     let best: { nx: number; nz: number; depth: number } | null = null;
     const cx = Math.floor(pos.x / CELL), cz = Math.floor(pos.z / CELL);
     const seen = new Set<Prepared>();
+    const tx = Math.floor(pos.x / TILE), tz = Math.floor(pos.z / TILE);
+    for (let ti = -1; ti <= 1; ti++) for (let tj = -1; tj <= 1; tj++) {
+    const td = this.tiles.get(tx + ti + '_' + (tz + tj));
+    if (!td) continue;
     for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
-      const arr = this.grid.get(cx + i + ',' + (cz + j));
+      const arr = td.grid.get(cx + i + ',' + (cz + j));
       if (!arr) continue;
       for (const b of arr) {
         if (seen.has(b)) continue; seen.add(b);
@@ -125,6 +148,7 @@ export class CollisionWorld {
         if (!best || depth > best.depth) best = { nx, nz, depth };
         pos.x += nx * depth; pos.z += nz * depth;
       }
+    }
     }
     return best;
   }

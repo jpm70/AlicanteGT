@@ -1,0 +1,637 @@
+"""Genera el mundo por teselas de 1 km: public/world/tiles/<tx>_<tz>.{glb,json,jpg}, manifest.json y dem.json.
+
+Entradas (tools/data/): osm_t/ (fetch_osm_tiles.py), dem.json (fetch_dem.py), catastro_ciudad.json (fetch_catastro.py),
+ortho_t/ (fetch_ortho_tiles.py). Coordenadas locales en metros: x = este, y = arriba, z = sur; origen = Explanada.
+
+Uso:  python tools/build_tiles.py            # todas las teselas
+      python tools/build_tiles.py 0,-1 -1,-1 # solo esas
+"""
+import base64, hashlib, json, math, os, shutil, sys
+from collections import Counter
+from multiprocessing import Pool
+
+import numpy as np, trimesh, shapely
+from shapely import STRtree, make_valid
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
+from shapely.ops import unary_union
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from world_config import *          # LAT0, LNG0, KLAT, KLNG, TILE, X0.., tiles(), tile_box(), ortho_px()
+from world_lib import *             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
+
+D = "tools/data/"
+OUT = "public/world/tiles"
+BAY, FLOOR = 3.2, 3.1
+CELL = 25
+
+ROAD_W = {"motorway": 12, "trunk": 11, "primary": 10, "secondary": 8.5, "tertiary": 7.5, "residential": 6.2,
+          "unclassified": 6.2, "living_street": 5.2, "service": 4.2, "primary_link": 6, "secondary_link": 5.5, "tertiary_link": 5}
+WALK_W = {"footway": 2.4, "pedestrian": 6.0, "path": 2.0, "cycleway": 2.5, "steps": 2.0, "track": 3.0}
+WALL_COLS = [0xf1e9d6, 0xe8d9b8, 0xf6efe0, 0xe3c9a0, 0xf4e4c1, 0xdcb89a, 0xefd7c4, 0xfaf6ec, 0xe9c58a, 0xd9a78a, 0xf0e2a8, 0xc9d3d6]
+ROOF_COLS = [0xa85a3c, 0x9c5238, 0x8a8d90, 0xb4684a, 0x7d7f82]
+OLD_COLS = [0xf1e9d6, 0xe8d9b8, 0xf6efe0, 0xe3c9a0, 0xf4e4c1, 0xdcb89a, 0xefd7c4, 0xe9c58a, 0xd9a78a, 0xf0e2a8]
+MID_COLS = [0xece8dc, 0xe3ded0, 0xd9d3c3, 0xf3efe6, 0xdcd6c6, 0xe8dfc9]
+NEW_COLS = [0xf4f4f2, 0xe6e8ea, 0xd7dbdd, 0xefe9de, 0xc9cfd2, 0xf8f6f0]
+SC_COLS = [0xfaf8f2, 0xfaf8f2, 0xf3efe4, 0xf7efd9, 0xdbe8f2, 0xf2dcc6, 0xfaf8f2, 0xe9d2a4]
+
+PLAZA = (82.0, -195.0)                    # Plaza del Ayuntamiento
+SANTA_CRUZ = (-110.0, -470.0, 135.0)      # barrio de Santa Cruz (cx, cz, radio)
+LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_SOL = 265207919, 83998999, 22560738, 21410214, 515871894, 53271502
+LM_COL = {LM_AYTO: 0xe3b48f, LM_CONCA: 0xe6dcc3, LM_SMARIA: 0xe0b685, LM_MERCAT: 0xf1dea0, LM_AUDIT: 0xf4f1ea,
+          22561001: 0xe0b685, 156992115: 0xe7b8a8, 33197578: 0xf2ecde, 22588102: 0xf3f3f1}
+FOUNTAINS = [  # (x, z, radio, escala, estrella, id colisión)
+    (-757.0, -312.0, 9.0, 1.6, True, -3),     # Luceros (Plaça dels Estels)
+    (-260.0, -21.0, 3.2, 0.9, False, -4),     # Fuente de la Aguadora
+]
+LM_STATION = 20987191                      # Alacant Terminal (estación de tren)
+LM_CHURCH = {22736202: 0xe6d9b8, 80695443: 0xe8dcc0, 33198270: 0xe9dcc0, 23904415: 0xe6dcc3, 86300369: 0xfaf8f2, 74336063: 0xe9dcc0}
+LM_COL[LM_STATION] = 0xe9d6a8
+LM_COL.update(LM_CHURCH)
+LM_COL[138298706] = 0xf4f4f2                # ADDA, Auditori de la Diputació
+CASTLE_GUESS = (300.0, -600.0)            # cumbre del Benacantil
+
+# ---------- estado global por proceso ----------
+G = {}
+_osm_cache = {}
+
+
+def P(pt):
+    return ((pt["lon"] - LNG0) * KLNG, -(pt["lat"] - LAT0) * KLAT)
+
+
+def osm(tx, tz, kind):
+    k = (tx, tz, kind)
+    if k not in _osm_cache:
+        if len(_osm_cache) > 10: _osm_cache.clear()
+        f = f"{D}osm_t/{tx}_{tz}_{kind}.json"
+        _osm_cache[k] = json.load(open(f)) if os.path.exists(f) else []
+    return _osm_cache[k]
+
+
+def gather(tx, tz, kind):
+    """Elementos de la tesela y sus 8 vecinas, sin duplicados (los elementos largos aparecen en varias)."""
+    out, seen = [], set()
+    for dz in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            a, b = tx + dx, tz + dz
+            if a not in TX_RANGE or b not in TZ_RANGE: continue
+            for e in osm(a, b, kind):
+                key = (e.get("type"), e.get("id"))
+                if key in seen: continue
+                seen.add(key); out.append(e)
+    return out
+
+
+def ways(els):
+    return [e for e in els if e.get("type") == "way" and len(e.get("geometry", [])) >= 2]
+
+
+def polys_of(g):
+    return [g] if isinstance(g, Polygon) else [x for x in getattr(g, "geoms", []) if isinstance(x, Polygon)]
+
+
+# ---------- relieve ----------
+def load_dem():
+    d = json.load(open(D + "dem.json"))
+    G["DX0"], G["DZ0"], G["DST"] = d["x0"], d["z0"], d["step"]
+    G["DXS"] = list(range(d["x0"], d["x1"] + 1, d["step"])); G["DZS"] = list(range(d["z0"], d["z1"] + 1, d["step"]))
+    H = np.array([[(d["h"].get(f"{x},{z}") or 0.0) for x in G["DXS"]] for z in G["DZS"]], dtype=float)
+    H = np.maximum(H, 0.0)
+    b = np.pad(H, 1, mode="edge")
+    G["HG"] = sum(b[i:i + H.shape[0], j:j + H.shape[1]] for i in range(3) for j in range(3)) / 9.0
+
+
+def hf(x, z):
+    HG = G["HG"]; DXS = G["DXS"]; DZS = G["DZS"]
+    x = np.asarray(x, dtype=float); z = np.asarray(z, dtype=float)
+    gx = np.clip((x - G["DX0"]) / G["DST"], 0, len(DXS) - 1.001); gz = np.clip((z - G["DZ0"]) / G["DST"], 0, len(DZS) - 1.001)
+    ix = gx.astype(int); iz = gz.astype(int); fx = gx - ix; fz = gz - iz
+    return HG[iz, ix] * (1 - fx) * (1 - fz) + HG[iz, ix + 1] * fx * (1 - fz) + HG[iz + 1, ix] * (1 - fx) * fz + HG[iz + 1, ix + 1] * fx * fz
+
+
+def lerp_col(c0, c1, t):
+    t = np.clip(t, 0, 1)[:, None]
+    return np.array(c0)[None, :] * (1 - t) + np.array(c1)[None, :] * t
+
+
+def drape(geom, off, color, terrain_tint=False, uvfn=None):
+    """Recorta en celdas del DEM (alineadas con las teselas) y levanta cada vértice al terreno: sin grietas."""
+    if geom is None or geom.is_empty: return None
+    polys = polys_of(geom)
+    if not polys: return None
+    tree = STRtree(polys)
+    bx0, bz0, bx1, bz1 = geom.bounds
+    V, F, C, U = [], [], [], []; nv = 0
+    for gx in range(int(math.floor(bx0 / CELL)) * CELL, int(math.ceil(bx1 / CELL)) * CELL, CELL):
+        for gz in range(int(math.floor(bz0 / CELL)) * CELL, int(math.ceil(bz1 / CELL)) * CELL, CELL):
+            cell = box(gx, gz, gx + CELL, gz + CELL)
+            for i in tree.query(cell):
+                piece = polys[i].intersection(cell)
+                for q in polys_of(piece):
+                    if q.is_empty or q.area < 0.05: continue
+                    try: v, f = trimesh.creation.triangulate_polygon(q, engine="earcut")
+                    except Exception: continue
+                    y = hf(v[:, 0], v[:, 1]) + off
+                    V.append(np.column_stack([v[:, 0], y, v[:, 1]])); F.append(f[:, ::-1] + nv); nv += len(v)
+                    if terrain_tint:
+                        col = lerp_col(color, hexrgb(0x8f7f5c), (y - 6) / 70.0)
+                        C.append(np.column_stack([col, np.full(len(v), 255)]))
+                    else:
+                        C.append(np.tile(color, (len(v), 1)))
+                    if uvfn is not None: U.append(uvfn(v[:, 0], v[:, 1]))
+    if not V: return None
+    return np.vstack(V), np.vstack(F), np.vstack(C).astype(np.uint8), (np.vstack(U) if U else None)
+
+
+# ---------- Catastro ----------
+def load_catastro():
+    G["CAT_POLYS"], G["CAT_META"], G["CAT_B"], G["CAT_TREE"] = [], [], {}, None
+    f = D + "catastro_ciudad.json"
+    if not os.path.exists(f): return
+    cat = json.load(open(f)); G["CAT_B"] = cat["buildings"]
+    for p in cat["parts"]:
+        for rings in p["polys"]:
+            try: g = Polygon(rings[0], rings[1:]).buffer(0)
+            except Exception: continue
+            if not g.is_empty and g.area > 0.5: G["CAT_POLYS"].append(g); G["CAT_META"].append((p["floors"], p["ref"]))
+    G["CAT_TREE"] = STRtree(G["CAT_POLYS"])
+
+
+def cat_pieces(poly):
+    """Trocea la huella OSM en volúmenes con las plantas del Catastro. [(poly, plantas|None, año|None, uso|None)]"""
+    none = [(poly, None, None, None)]
+    tree = G["CAT_TREE"]
+    if tree is None: return none
+    polys, meta, CB = G["CAT_POLYS"], G["CAT_META"], G["CAT_B"]
+    groups = {}; covered = 0.0; yrs = Counter(); uses = Counter()
+    for i in tree.query(poly):
+        fl = meta[i][0]
+        if not fl: continue
+        inter = poly.intersection(polys[i]); ar = inter.area
+        if ar < 1.0: continue
+        groups.setdefault(fl, []).append(inter); covered += ar
+        bi = CB.get(meta[i][1])
+        if bi:
+            if bi["year"]: yrs[bi["year"]] += ar
+            if bi["use"]: uses[bi["use"]] += ar
+    if not groups or covered < 0.45 * poly.area: return none
+    fl_area = {f: unary_union(g).area for f, g in groups.items()}
+    dom = max(fl_area, key=fl_area.get)
+    year = yrs.most_common(1)[0][0] if yrs else None; use = uses.most_common(1)[0][0] if uses else None
+    sig = [f for f, a in fl_area.items() if a >= 15 and a >= 0.10 * poly.area]
+    if len(sig) <= 1 or max(sig) - min(sig) < 2: return [(poly, dom, year, use)]
+    pieces = []; used = Polygon()
+    for fl in sorted(sig, reverse=True):
+        g = unary_union(groups[fl]).buffer(0.4).intersection(poly).difference(used).buffer(0)
+        for sub in polys_of(g):
+            if sub.area >= 8: pieces.append((sub.simplify(0.2), fl, year, use))
+        used = unary_union([used, g])
+    for sub in polys_of(poly.difference(used).buffer(0)):
+        if sub.area >= 8: pieces.append((sub.simplify(0.2), dom, year, use))
+    return pieces or [(poly, dom, year, use)]
+
+
+def style_for(levels, seed):
+    if levels >= 8: return 3
+    if levels <= 3: return 2 if seed % 3 else 0
+    return 0 if seed % 5 else 1
+
+
+def style_by_cat(fl, year, use):
+    if use and not use.startswith("1_"): return 1
+    if not year: return None
+    if year < 1940: return 0 if fl >= 4 else 2
+    if year < 1985: return 3 if fl >= 5 else 0
+    return 1
+
+
+# ---------- mar (global) ----------
+def build_sea():
+    ws = {}
+    for (tx, tz) in tiles():
+        for e in osm(tx, tz, "nat"):
+            if e.get("type") == "way" and e.get("tags", {}).get("natural") == "coastline" and len(e.get("geometry", [])) >= 2:
+                ws[e["id"]] = e
+    key = lambda pt: (round(pt["lat"], 7), round(pt["lon"], 7))
+    lst = list(ws.values())
+    closed = [e for e in lst if key(e["geometry"][0]) == key(e["geometry"][-1]) and len(e["geometry"]) > 3]
+    opened = [e for e in lst if e not in closed]
+    by_start = {key(e["geometry"][0]): e for e in opened}
+    ends = {key(e["geometry"][-1]) for e in opened}
+    chains, used = [], set()
+    for e in opened:
+        if key(e["geometry"][0]) in ends: continue
+        pts, cur = [], e
+        while cur and cur["id"] not in used:
+            used.add(cur["id"]); pts += [P(p) for p in cur["geometry"]]
+            cur = by_start.get(key(cur["geometry"][-1]))
+        if len(pts) > 2: chains.append(pts)
+
+    def right(a, b, d=8000):
+        dx, dz = b[0] - a[0], b[1] - a[1]; l = math.hypot(dx, dz) or 1
+        return (-dz / l * d, dx / l * d)
+
+    def make(flip):
+        sea = Polygon()
+        for c in chains:
+            s = -1 if flip else 1
+            r0 = right(c[0], c[1]); r1 = right(c[-2], c[-1])
+            poly = Polygon(c + [(c[-1][0] + s * r1[0], c[-1][1] + s * r1[1]), (c[0][0] + s * r0[0], c[0][1] + s * r0[1])]).buffer(0)
+            sea = unary_union([sea, poly])
+        return sea
+    sea = make(False)
+    if not sea.contains(Point(1500, 500)): sea = make(True)      # la tierra debe quedar a la izquierda: comprueba con un punto de mar conocido
+    from shapely.geometry import LinearRing
+    for e in closed:                                              # islas (tierra dentro) y lagos
+        pts = [P(p) for p in e["geometry"]]
+        rg = Polygon(pts).buffer(0)
+        if not LinearRing(pts).is_ccw: sea = sea.difference(rg)   # en x-este/z-sur el sentido se invierte: horario = isla
+        else: sea = unary_union([sea, rg])
+    return sea.intersection(box(X0 - 300, Z0 - 300, X1 + 300, Z1 + 300))
+
+
+# ---------- construcción de una tesela ----------
+def build_tile(args):
+    tx, tz = args
+    x0, z0, x1, z1 = tile_box(tx, tz)
+    tbox = box(x0, z0, x1, z1); mbox = tbox.buffer(70)
+    mx0, mz0, mx1, mz1 = mbox.bounds
+
+    def near(pts):
+        xs = [p[0] for p in pts]; zs = [p[1] for p in pts]
+        return not (max(xs) < mx0 or min(xs) > mx1 or max(zs) < mz0 or min(zs) > mz1)
+
+    # --- calzadas, aceras, plazas y mosaico ---
+    hw = ways(gather(tx, tz, "highway"))
+    road_geoms, walk_geoms, road_lines, plaza_geoms, mosaic_geoms = [], [], [], [], []
+    for e in hw:
+        t = e["tags"]; k = t.get("highway"); pts = [P(p) for p in e["geometry"]]
+        if not near(pts): continue
+        if t.get("area") == "yes":
+            if t.get("highway") in ("pedestrian", "footway") and len(pts) >= 4 and pts[0] == pts[-1]:
+                try: g = make_valid(Polygon(pts)).buffer(0)
+                except Exception: continue
+                (mosaic_geoms if "esplanada" in t.get("name", "").lower() else plaza_geoms).append(g)
+            continue
+        if t.get("tunnel") in ("yes", "building_passage"): continue
+        if k in ROAD_W:
+            w = float(str(t.get("width", "0")).split()[0] or 0) if str(t.get("width", "")).replace(".", "").isdigit() else 0
+            if not w: w = max(ROAD_W[k], int(t["lanes"]) * 3.2 if str(t.get("lanes", "")).isdigit() else 0)
+            road_geoms.append(LineString(pts).buffer(w / 2, cap_style=2, join_style=1))
+            road_lines.append({"k": k, "w": w, "p": [[round(x, 2), round(z, 2)] for x, z in pts]})
+        elif k in WALK_W:
+            walk_geoms.append(LineString(pts).buffer(WALK_W[k] / 2, cap_style=2, join_style=1))
+    roads = unary_union(road_geoms) if road_geoms else Polygon()
+    walk = unary_union(walk_geoms).difference(roads) if walk_geoms else Polygon()
+    sidew = unary_union([g.buffer(1.8) for g in road_geoms]).difference(roads) if road_geoms else Polygon()
+    mosaic = unary_union(mosaic_geoms).buffer(25).buffer(-25).difference(roads) if mosaic_geoms else Polygon()   # cierra el hueco del edificio quitado
+    walk = unary_union([walk, sidew] + plaza_geoms).difference(mosaic)
+
+    # --- mar, muelles, parques ---
+    sea = G["SEA"].intersection(tbox)
+    nat = ways(gather(tx, tz, "nat"))
+    pier_geoms, park_geoms = [], []
+    for e in nat:
+        t = e.get("tags", {}); pts = [P(p) for p in e["geometry"]]
+        if not near(pts): continue
+        try:
+            if t.get("man_made") in ("pier", "breakwater"):
+                pier_geoms.append(Polygon(pts).buffer(0) if pts[0] == pts[-1] and len(pts) > 3 else LineString(pts).buffer(3.5, cap_style=2))
+            elif (t.get("leisure") in ("park", "garden") or t.get("landuse") == "grass") and len(pts) >= 4 and pts[0] == pts[-1]:
+                park_geoms.append(make_valid(Polygon(pts)).buffer(0))
+        except Exception:
+            pass
+    piers = unary_union(pier_geoms) if pier_geoms else Polygon()
+    sea_free = sea.difference(piers.buffer(0.2)) if not sea.is_empty else sea
+    parks = unary_union(park_geoms).difference(roads).difference(sea_free) if park_geoms else Polygon()
+    land = tbox.difference(G["SEA"]); land = unary_union([land, piers.intersection(tbox)])
+    roads_t = roads.intersection(tbox).difference(sea_free)
+    walk_t = walk.intersection(tbox).difference(sea_free)
+    mosaic_t = mosaic.intersection(tbox).difference(sea_free)
+    parks_t = parks.intersection(tbox)
+
+    # --- árboles y farolas ---
+    trees, lamps = [], []
+    for e in gather(tx, tz, "nodes"):
+        if e.get("type") != "node": continue
+        x, z = P(e)
+        if not (x0 <= x < x1 and z0 <= z < z1): continue
+        t = e.get("tags", {})
+        if t.get("natural") == "tree":
+            sp = (t.get("species", "") + t.get("genus", "") + t.get("species:en", "")).lower()
+            palm = t.get("leaf_type") == "palm_leaved" or "phoenix" in sp or "washingtonia" in sp or "palm" in sp
+            trees.append([round(x, 2), round(z, 2), 1 if palm else 0])
+        else:
+            lamps.append([round(x, 2), round(z, 2), 1 if t.get("highway") == "traffic_signals" else 0])
+    tree_obst = [{"id": 0, "h": 4, "p": [[round(x + 0.4 * math.cos(a * math.pi / 4), 2), round(z + 0.4 * math.sin(a * math.pi / 4), 2)] for a in range(9)]} for x, z, _ in trees]
+
+    # --- edificios ---
+    wv, wf, wc, wu = [], [], [], []; rv, rf, rc = [], [], []
+    nwv = [0]; collid = []; lm_parts = []; castle_parts = []; lm_obst = []; styles = [0, 0, 0, 0]
+
+    def emit_ring(coords, ccw_outward, st, levels_f, col, ytop):
+        ring = list(coords); rh_ = hf([c[0] for c in ring], [c[1] for c in ring]); s_acc = 0.0
+        for ri, ((xa, za), (xb, zb)) in enumerate(zip(ring[:-1], ring[1:])):
+            yb1 = float(rh_[ri]) - 0.4; yb2 = float(rh_[ri + 1]) - 0.4
+            L = math.hypot(xb - xa, zb - za)
+            if L < 0.05: continue
+            u1 = s_acc / BAY + st * 1000; u2 = (s_acc + L) / BAY + st * 1000; s_acc += L
+            tri = [[0, 2, 1], [0, 3, 2]] if ccw_outward else [[0, 1, 2], [0, 2, 3]]
+            base = nwv[0]; nwv[0] += 4
+            wv.extend([[xa, yb1, za], [xb, yb2, zb], [xb, ytop, zb], [xa, ytop, za]])
+            wu.extend([[u1, (yb1 - ytop) / FLOOR + levels_f], [u2, (yb2 - ytop) / FLOOR + levels_f], [u2, levels_f], [u1, levels_f]])
+            wc.extend([col] * 4)
+            wf.extend([[base + i for i in f] for f in tri])
+
+    for e in ways(gather(tx, tz, "building")):
+        pts = [P(p) for p in e["geometry"]]
+        if len(pts) < 4: continue
+        cxm = sum(p[0] for p in pts) / len(pts); czm = sum(p[1] for p in pts) / len(pts)
+        if not (x0 - 60 <= cxm < x1 + 60 and z0 - 60 <= czm < z1 + 60): continue
+        try: poly0 = make_valid(Polygon(pts))
+        except Exception: continue
+        if isinstance(poly0, MultiPolygon): poly0 = max(poly0.geoms, key=lambda g: g.area)
+        if not isinstance(poly0, Polygon) or poly0.area < 6: continue
+        poly0 = poly0.buffer(0).simplify(0.15)
+        if poly0.is_empty or not isinstance(poly0, Polygon): continue
+        c0 = poly0.centroid
+        if not (x0 <= c0.x < x1 and z0 <= c0.y < z1): continue          # cada edificio se construye en una sola tesela
+        if not mosaic.is_empty and mosaic.contains(c0): continue         # no tapar el mosaico de la Explanada
+        t = e["tags"]; lv = t.get("building:levels")
+        is_lm = e["id"] in (LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_SOL) or e["id"] in LM_COL
+        pieces = [(poly0, None, None, None)] if is_lm else cat_pieces(poly0)
+        seed = int(hashlib.md5(str(e["id"]).encode()).hexdigest()[:6], 16)
+        for pi, (poly, cfl, cyear, cuse) in enumerate(pieces):
+            if not isinstance(poly, Polygon) or poly.is_empty or poly.area < 4: continue
+            osm_h = None
+            try: osm_h = float(str(t["height"]).replace("m", ""))
+            except Exception: pass
+            if osm_h is not None and (len(pieces) == 1 or cfl is None): h = osm_h; levels = h / FLOOR
+            elif cfl: h = cfl * FLOOR + 1.2; levels = float(cfl)
+            elif lv and lv.replace(".", "").isdigit(): h = float(lv) * FLOOR + 1.2; levels = float(lv)
+            else: h = 10.5; levels = h / FLOOR
+            h = max(3.0, min(h, 90.0)); levels_f = h / FLOOR
+            st = style_for(levels, seed)
+            col = hexrgb(WALL_COLS[seed % len(WALL_COLS)])
+            if cfl and (cyear or cuse):
+                sc = style_by_cat(cfl, cyear, cuse)
+                if sc is not None: st = sc
+                pal = OLD_COLS if (cyear or 9999) < 1940 else MID_COLS if (cyear or 9999) < 1985 else NEW_COLS
+                if cuse and not cuse.startswith("1_"): pal = NEW_COLS
+                col = hexrgb(pal[seed % len(pal)])
+            rcol = hexrgb(ROOF_COLS[(seed >> 4) % len(ROOF_COLS)])
+            _c = poly.centroid
+            if e["id"] in LM_COL: col = hexrgb(LM_COL[e["id"]])
+            elif math.hypot(_c.x - SANTA_CRUZ[0], _c.y - SANTA_CRUZ[1]) < SANTA_CRUZ[2]:
+                col = hexrgb(SC_COLS[seed % len(SC_COLS)]); st = 2
+            if e["id"] == LM_SOL: st = 1
+            if e["id"] == LM_MERCAT: rcol = hexrgb(0xb7b0a0)
+            styles[st] += 1
+            ext = list(poly.exterior.coords)
+            rh = hf([c[0] for c in ext], [c[1] for c in ext]); ytop = float(rh.max()) + h
+            emit_ring(ext, poly.exterior.is_ccw, st, levels_f, col, ytop)
+            for hole in poly.interiors:
+                emit_ring(list(hole.coords), not hole.is_ccw, st, levels_f, col, ytop)
+            rm = tri_mesh(poly, ytop, rcol)
+            if rm is not None:
+                base = sum(len(a) for a in rv)
+                rv.append(np.asarray(rm.vertices)); rf.append(np.asarray(rm.faces) + base); rc.append(np.asarray(rm.visual.vertex_colors))
+            if (e["id"] in (LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_STATION) or e["id"] in LM_CHURCH) and pi == 0:
+                landmark_extras(e["id"], poly, rh, ytop, lm_parts, road_lines)
+            collid.append({"id": e["id"], "h": round(h, 1), "p": [[round(x, 2), round(z, 2)] for x, z in poly.exterior.coords]})
+
+    # --- fuentes con estatua ---
+    stone_c = hexrgb(0xd9d3c3); water_c = hexrgb(0x4aa3d6); bronze_c = hexrgb(0x6b5a3a)
+    for (fx, fz, R, sc, star, fid) in FOUNTAINS:
+        if x0 <= fx < x1 and z0 <= fz < z1:
+            lm_parts += fountain_at(fx, fz, float(hf(fx, fz)), R, sc, stone_c, water_c, bronze_c, star)
+            lm_obst.append({"id": fid, "h": 4, "p": [[round(fx + (R + 0.2) * math.cos(a * math.pi / 8), 2), round(fz + (R + 0.2) * math.sin(a * math.pi / 8), 2)] for a in range(17)]})
+
+    # --- castillo ---
+    if x0 <= CASTLE_GUESS[0] < x1 and z0 <= CASTLE_GUESS[1] < z1:
+        castle_parts, cobst = build_castle()
+        lm_obst += cobst
+
+    # --- mallas ---
+    parts = []
+
+    def add(name, geom, off, col, tint=False, uvfn=None):
+        r = drape(geom, off, col, terrain_tint=tint, uvfn=uvfn)
+        if r is not None: parts.append((name, r[0], r[1], r[2], r[3]))
+    add("Ground", land.intersection(tbox), 0.0, hexrgb(0xb7ad98), tint=True)
+    add("Park", parks_t, 0.02, hexrgb(0x5f8a4a))
+    add("Road", roads_t, 0.03, hexrgb(0x3a3d42))
+    add("Sidewalk", walk_t, 0.06, hexrgb(0xc9c0ab))
+    if not mosaic_t.is_empty:
+        big = max(polys_of(unary_union(mosaic_geoms)), key=lambda g: g.area)
+        mrr = big.minimum_rotated_rectangle; mc = list(mrr.exterior.coords)
+        e1 = (mc[1][0] - mc[0][0], mc[1][1] - mc[0][1]); e2 = (mc[2][0] - mc[1][0], mc[2][1] - mc[1][1])
+        ax = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2; al = math.hypot(*ax); ax = (ax[0] / al, ax[1] / al); pr = (-ax[1], ax[0])
+        cx0, cz0 = mrr.centroid.x, mrr.centroid.y
+        def muv(x, z):
+            dx, dz = x - cx0, z - cz0
+            return np.column_stack([(dx * ax[0] + dz * ax[1]) / 9.0, (dx * pr[0] + dz * pr[1]) / 9.0])
+        add("Mosaic", mosaic_t, 0.07, hexrgb(0xffffff), uvfn=muv)
+    if not sea_free.is_empty:
+        w = tri_mesh(sea_free, -0.45, hexrgb(0x1d6fa5))
+        if w is not None: parts.append(("Water", np.asarray(w.vertices), np.asarray(w.faces), np.asarray(w.visual.vertex_colors), None))
+    if wv: parts.append(("Walls", np.array(wv), np.array(wf), np.array(wc), np.array(wu)))
+    if rv: parts.append(("Roofs", np.vstack(rv), np.vstack(rf), np.vstack(rc), None))
+    if castle_parts:
+        V, F, C = join_parts(castle_parts); parts.append(("Castle", V, F, C, None))
+    if lm_parts:
+        V, F, C = join_parts(lm_parts); parts.append(("Landmark", V, F, C, None))
+
+    # --- superficie transitable (bits a 2 m) ---
+    DC = 2.0; n = int(TILE / DC)
+    drive_geom = unary_union([roads_t, walk_t, mosaic_t]).buffer(0.5).difference(sea_free) if not (roads_t.is_empty and walk_t.is_empty and mosaic_t.is_empty) else Polygon()
+    gxs = x0 + (np.arange(n) + 0.5) * DC; gzs = z0 + (np.arange(n) + 0.5) * DC
+    GX, GZ = np.meshgrid(gxs, gzs)
+    if drive_geom.is_empty: okmask = np.zeros((n, n), dtype=bool)
+    else:
+        shapely.prepare(drive_geom)
+        okmask = shapely.contains_xy(drive_geom, GX.ravel(), GZ.ravel()).reshape(n, n)
+    bits = base64.b64encode(np.packbits(okmask.ravel()).tobytes()).decode()
+
+    # --- mar como obstáculo (subteselas de 150 m) ---
+    sea_tiles = []
+    if not sea_free.is_empty:
+        T = 150
+        for gx in range(x0, x1, T):
+            for gz in range(z0, z1, T):
+                part = sea_free.intersection(box(gx, gz, min(gx + T, x1), min(gz + T, z1)))
+                for g in polys_of(part):
+                    if g.area > 4: sea_tiles.append({"id": -1, "h": 0, "p": [[round(x, 2), round(z, 2)] for x, z in g.exterior.coords]})
+
+    os.makedirs(OUT, exist_ok=True)
+    name = f"{tx}_{tz}"
+    has_content = bool(wv or not roads_t.is_empty or not parks_t.is_empty or not land.is_empty)
+    write_glb(f"{OUT}/{name}.glb", parts)
+    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst, "trees": trees, "lamps": lamps,
+               "drive": {"x0": x0, "z0": z0, "cell": DC, "nx": n, "nz": n, "bits": bits}}, open(f"{OUT}/{name}.json", "w"))
+    ortho = 0
+    src = f"{D}ortho_t/{name}.jpg"
+    if os.path.exists(src) and not land.is_empty and (not roads_t.is_empty or wv):
+        shutil.copyfile(src, f"{OUT}/{name}.jpg"); ortho = ortho_px(tx, tz)
+    return {"tx": tx, "tz": tz, "glb": os.path.getsize(f"{OUT}/{name}.glb") // 1024, "buildings": len(collid), "trees": len(trees),
+            "ortho": ortho, "styles": styles, "land": not land.is_empty}
+
+
+# ---------- hitos ----------
+def landmark_extras(eid, poly, rh, ytop, lm_parts, road_lines):
+    stone = hexrgb(LM_COL[eid]); cc = poly.centroid; ang = edge_angle_to(poly, PLAZA)
+    if eid == LM_AYTO:
+        for q in nearest_vertices(poly, PLAZA, 2):
+            tx_, tz_ = toward_centroid(poly, q, 3.6)
+            lm_parts += tower_at(tx_, tz_, float(rh.min()) - 0.5, ytop + 13.0, 6.6, ang, stone, hexrgb(0x2f6f9f), 9.0)
+    elif eid == LM_CONCA:
+        lm_parts.append(dome_at(cc.x, cc.y, ytop - 1.0, 11.0, 10.5, hexrgb(0x3a78b8)))
+        q = nearest_vertices(poly, PLAZA, 1)[0]; tx_, tz_ = toward_centroid(poly, q, 4.5)
+        lm_parts += tower_at(tx_, tz_, float(rh.min()) - 0.5, ytop + 14.0, 7.5, ang, stone, hexrgb(0xb2593a), 8.0)
+    elif eid == LM_SMARIA:
+        lm_parts.append(dome_at(cc.x, cc.y, ytop - 1.0, 7.5, 7.0, hexrgb(0xb2593a)))
+        for q in nearest_vertices(poly, (150.0, -300.0), 2):
+            tx_, tz_ = toward_centroid(poly, q, 3.8)
+            lm_parts += tower_at(tx_, tz_, float(rh.min()) - 0.5, ytop + 10.0, 6.0, ang, stone, hexrgb(0xb2593a), 6.5)
+    elif eid == LM_MERCAT:
+        mr = poly.minimum_rotated_rectangle; mc = list(mr.exterior.coords)[:4]
+        e1 = (mc[1][0] - mc[0][0], mc[1][1] - mc[0][1]); ang_m = -math.atan2(e1[1], e1[0])
+        green = hexrgb(0x5f8f8a); cream = hexrgb(0xf1dea0)
+        lm_parts.append(cyl_at(cc.x, cc.y, ytop - 0.5, ytop + 3.0, 7.5, hexrgb(0xe9d89a)))
+        lm_parts.append(dome_at(cc.x, cc.y, ytop + 3.0, 7.5, 5.5, green))
+        lm_parts.append(cyl_at(cc.x, cc.y, ytop + 8.0, ytop + 10.5, 1.0, cream, 12))
+        lm_parts.append(dome_at(cc.x, cc.y, ytop + 10.5, 1.2, 1.6, green))
+        for q in mc:
+            tx_, tz_ = toward_centroid(poly, q, 3.5)
+            lm_parts += tower_at(tx_, tz_, float(rh.min()) - 0.5, ytop + 5.0, 5.5, ang_m, cream, green, 6.0)
+        best = None
+        for r_ in road_lines:
+            if r_["k"] not in ("primary", "secondary"): continue
+            for (rx, rz) in r_["p"]:
+                dd = math.hypot(rx - cc.x, rz - cc.y)
+                if dd < 90 and (best is None or dd < best[0]): best = (dd, rx, rz)
+        if best:
+            pxy = (best[1], best[2]); be = None
+            for a_, b_ in zip(mc, mc[1:] + mc[:1]):
+                mid = ((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2); dd = math.hypot(mid[0] - pxy[0], mid[1] - pxy[1])
+                if be is None or dd < be[0]: be = (dd, a_, b_, mid)
+            _, a_, b_, mid = be
+            dx, dz = b_[0] - a_[0], b_[1] - a_[1]; ll = math.hypot(dx, dz) or 1; dx, dz = dx / ll, dz / ll
+            nx, nz = dz, -dx
+            if nx * (pxy[0] - mid[0]) + nz * (pxy[1] - mid[1]) < 0: nx, nz = -nx, -nz
+            angp = -math.atan2(dz, dx); gg = float(hf(mid[0], mid[1]))
+            for sg in (-1, 1):
+                lm_parts.append(box_at(mid[0] + dx * sg * 4.2 + nx * 0.7, mid[1] + dz * sg * 4.2 + nz * 0.7, gg - 0.3, gg + 9.5, 1.8, 2.4, angp, cream))
+            lm_parts.append(box_at(mid[0] + nx * 0.7, mid[1] + nz * 0.7, gg + 9.5, gg + 12.5, 10.8, 2.4, angp, cream))
+            lm_parts.append(box_at(mid[0] + nx * 0.2, mid[1] + nz * 0.2, gg - 0.3, gg + 9.5, 6.8, 0.6, angp, hexrgb(0x2b2622)))
+    elif eid == LM_AUDIT:
+        lm_parts.append(dome_at(cc.x, cc.y, ytop - 0.5, 7.0, 6.0, hexrgb(0xf4f1ea)))
+    elif eid in LM_CHURCH or eid == LM_STATION:
+        mr = poly.minimum_rotated_rectangle; mc = list(mr.exterior.coords)[:4]
+        e1 = (mc[1][0] - mc[0][0], mc[1][1] - mc[0][1]); ang_m = -math.atan2(e1[1], e1[0])
+        front = None                                    # arista de la huella más cercana a una calle
+        for r_ in road_lines:
+            if r_["k"] not in ("primary", "secondary", "tertiary", "residential", "pedestrian"): continue
+            for (rx, rz) in r_["p"]:
+                dd = math.hypot(rx - cc.x, rz - cc.y)
+                if dd < 70 and (front is None or dd < front[0]): front = (dd, rx, rz)
+        if front is not None:
+            pxy = (front[1], front[2]); be = None
+            for a_, b_ in zip(mc, mc[1:] + mc[:1]):
+                mid = ((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2); dd = math.hypot(mid[0] - pxy[0], mid[1] - pxy[1])
+                if be is None or dd < be[0]: be = (dd, a_, b_, mid)
+            _, a_, b_, mid = be
+        else:
+            a_, b_ = mc[0], mc[1]; mid = ((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2)
+        dx, dz = b_[0] - a_[0], b_[1] - a_[1]; ll = math.hypot(dx, dz) or 1; dx, dz = dx / ll, dz / ll
+        nx, nz = dz, -dx
+        if nx * (cc.x - mid[0]) + nz * (cc.y - mid[1]) < 0: nx, nz = -nx, -nz          # normal hacia el interior
+        angp = -math.atan2(dz, dx); gg = float(hf(mid[0], mid[1])); stone = hexrgb(LM_COL[eid])
+        if eid == LM_STATION:
+            cream = hexrgb(0xf0e2bd); dark = hexrgb(0x2b2622)
+            px_, pz_ = mid[0] + nx * 3.0, mid[1] + nz * 3.0
+            lm_parts.append(box_at(px_, pz_, gg - 0.3, ytop + 7.0, 18.0, 7.0, angp, cream))          # cuerpo central avanzado
+            lm_parts.append(box_at(px_ - nx * 3.6, pz_ - nz * 3.6, gg - 0.3, ytop + 7.5, 9.0, 0.7, angp, dark))   # portada oscura
+            lm_parts.append(box_at(px_, pz_, ytop + 7.0, ytop + 8.4, 19.4, 8.4, angp, stone))        # cornisa
+            lm_parts += tower_at(px_, pz_, ytop + 8.4, ytop + 17.5, 5.2, angp, stone, hexrgb(0xb2593a), 5.5)   # torre del reloj
+            lm_parts.append(box_at(px_ - nx * 2.7, pz_ - nz * 2.7, ytop + 11.5, ytop + 14.5, 3.0, 0.3, angp, hexrgb(0xf7f4ec)))  # esfera
+            for sg in (-1, 1):
+                lm_parts += tower_at(mid[0] + dx * sg * 15.5 + nx * 2.5, mid[1] + dz * sg * 15.5 + nz * 2.5, gg - 0.3, ytop + 5.5, 5.0, angp, cream, hexrgb(0x8a8d90), 4.5)
+        else:
+            w = min(math.hypot(*e1), 30.0)
+            tx_ = mid[0] + dx * (-w * 0.32) + nx * 3.2; tz_ = mid[1] + dz * (-w * 0.32) + nz * 3.2
+            lm_parts += tower_at(tx_, tz_, gg - 0.5, ytop + 13.0, 5.6, angp, stone, hexrgb(0xb2593a), 7.5)
+            lm_parts.append(dome_at(cc.x, cc.y, ytop - 0.5, max(3.0, min(5.5, w * 0.2)), max(2.5, min(4.5, w * 0.17)), hexrgb(0x5f8f8a) if eid != 86300369 else hexrgb(0x3a78b8)))
+
+
+def build_castle():
+    """Castillo de Santa Bárbara: murallas por tramos que siguen la pendiente, almenas, torres y torre del Homenaje."""
+    HG, DXS, DZS = G["HG"], G["DXS"], G["DZS"]
+    best = None
+    for iz, zz in enumerate(DZS):
+        for ix, xx in enumerate(DXS):
+            if math.hypot(xx - CASTLE_GUESS[0], zz - CASTLE_GUESS[1]) <= 150 and (best is None or HG[iz, ix] > best[0]): best = (HG[iz, ix], xx, zz)
+    hmax, sx0, sz0 = best
+    cells = [box(xx - 12.5, zz - 12.5, xx + 12.5, zz + 12.5) for iz, zz in enumerate(DZS) for ix, xx in enumerate(DXS)
+             if math.hypot(xx - sx0, zz - sz0) <= 230 and HG[iz, ix] >= hmax * 0.90]
+    area = unary_union(cells).buffer(10).buffer(-10)
+    if isinstance(area, MultiPolygon): area = max(area.geoms, key=lambda g: g.area)
+    outer = area.simplify(4.0)
+    parts, obst = [], []
+    stone = hexrgb(0xcdb386); stone2 = hexrgb(0xc2a678); keepc = hexrgb(0xd9c398)
+    ring = list(outer.exterior.coords); perim = outer.exterior.length
+    segs = max(1, int(perim / 4.0))
+    for i in range(segs):
+        pa = outer.exterior.interpolate(i * perim / segs); pb = outer.exterior.interpolate((i + 1) * perim / segs)
+        ha, hb = float(hf(pa.x, pa.y)), float(hf(pb.x, pb.y)); hm = (ha + hb) / 2
+        L = math.hypot(pb.x - pa.x, pb.y - pa.y)
+        if L < 0.2: continue
+        ang = -math.atan2(pb.y - pa.y, pb.x - pa.x)
+        parts.append(box_at((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, min(ha, hb) - 2.5, hm + 6.0, L + 0.25, 2.2, ang, stone))
+        for k in (0.25, 0.75):
+            parts.append(box_at(pa.x + (pb.x - pa.x) * k, pa.y + (pb.y - pa.y) * k, hm + 6.0, hm + 7.2, 1.4, 2.3, ang, stone))
+    last = None
+    for (x, z) in ring[:-1]:
+        if last is None or math.hypot(x - last[0], z - last[1]) > 45:
+            g = float(hf(x, z))
+            parts.append(box_at(x, z, g - 2.5, g + 11.0, 6.0, 6.0, 0.4, stone2))
+            parts.append(box_at(x, z, g + 11.0, g + 12.3, 6.6, 6.6, 0.4, stone))
+            last = (x, z)
+    rp = outer.representative_point(); hh = float(hf(rp.x, rp.y))
+    parts.append(box_at(rp.x, rp.y, hh - 1.0, hh + 17.0, 11.0, 11.0, 0.3, keepc))
+    parts.append(box_at(rp.x, rp.y, hh + 17.0, hh + 18.4, 12.2, 12.2, 0.3, stone))
+    parts.append(box_at(rp.x, rp.y, hh + 18.4, hh + 22.0, 5.0, 5.0, 0.3, stone2))
+    obst.append({"id": -2, "h": 30, "p": [[round(x, 2), round(z, 2)] for x, z in outer.exterior.coords]})
+    return parts, obst
+
+
+def init():
+    load_dem(); load_catastro(); G["SEA"] = build_sea()
+
+
+def main():
+    todo = tiles()
+    if len(sys.argv) > 1:
+        todo = [tuple(int(v) for v in a.split(",")) for a in sys.argv[1:]]
+    os.makedirs(OUT, exist_ok=True)
+    with Pool(processes=min(3, os.cpu_count() or 2), initializer=init) as pool:
+        res = []
+        for r in pool.imap_unordered(build_tile, todo):
+            res.append(r); print(f"tesela {r['tx']}_{r['tz']}: glb {r['glb']} KB, edificios {r['buildings']}, árboles {r['trees']}, ortofoto {r['ortho']}px", flush=True)
+    # manifiesto y relieve global
+    prev = {}
+    mf = "public/world/manifest.json"
+    if os.path.exists(mf) and len(sys.argv) > 1:
+        prev = {(t["tx"], t["tz"]): t for t in json.load(open(mf))["tiles"]}
+    for r in res:
+        prev[(r["tx"], r["tz"])] = {"tx": r["tx"], "tz": r["tz"], "ortho": r["ortho"], "land": r["land"]}
+    load_dem()
+    d = {"x0": G["DX0"], "z0": G["DZ0"], "step": G["DST"], "nx": len(G["DXS"]), "nz": len(G["DZS"]), "h": [round(float(v), 1) for v in G["HG"].reshape(-1)]}
+    json.dump(d, open("public/world/dem.json", "w"))
+    json.dump({"tile": TILE, "tx": [TX_RANGE.start, TX_RANGE.stop - 1], "tz": [TZ_RANGE.start, TZ_RANGE.stop - 1], "tiles": sorted(prev.values(), key=lambda t: (t["tz"], t["tx"]))},
+              open(mf, "w"))
+    print("OK", len(prev), "teselas")
+
+
+if __name__ == "__main__":
+    main()

@@ -2,7 +2,9 @@
 import json, math, os, time, requests
 LAT0, LNG0 = 38.3432, -0.4820
 KLAT = 111320.0; KLNG = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1, STEP = -1150, 900, -900, 700, 25      # x este, z sur (m)
+sys_path = __import__('sys').path; sys_path.insert(0, os.path.dirname(__file__))
+from world_config import X0, X1, Z0, Z1
+STEP = 25   # m
 xs = list(range(X0, X1 + 1, STEP)); zs = list(range(Z0, Z1 + 1, STEP))
 pts = [(x, z) for z in zs for x in xs]
 out = "tools/data/dem.json"

@@ -1,4 +1,6 @@
 /** Conversión lat/lng <-> metros locales. Origen = Explanada. x = este, z = sur (Three.js). */
+/** Lado de cada tesela del mundo (m); coincide con tools/world_config.py. */
+export const TILE = 1000;
 export const ORIGIN = { lat: 38.3432, lng: -0.4820 };
 const KLAT = 111320;
 const KLNG = 111320 * Math.cos((ORIGIN.lat * Math.PI) / 180);
