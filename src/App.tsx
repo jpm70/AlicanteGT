@@ -12,7 +12,7 @@ import {
   stepCarPhysics,
 } from './game/carPhysics';
 import { EngineAudioSynth } from './game/engineAudio';
-import { getSkyBackdropCss } from './map/atmosphereStyler';
+import { getSkyBackdropCss } from './game/sky';
 import { WorldScene } from './world/WorldScene';
 import { toLocal } from './world/geo';
 import type {

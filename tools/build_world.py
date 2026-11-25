@@ -221,6 +221,7 @@ for e in ways(load("building")):
     if not isinstance(poly, Polygon) or poly.area < 6: continue
     poly = poly.buffer(0).simplify(0.15)
     if poly.is_empty or not isinstance(poly, Polygon): continue
+    if not mosaic.is_empty and mosaic.contains(poly.centroid): continue   # no tapar el mosaico de la Explanada
     t = e["tags"]; lv = t.get("building:levels")
     try: h = float(str(t["height"]).replace("m",""))
     except Exception:
@@ -438,24 +439,25 @@ try:
     ring = list(outer.exterior.coords)
     rh_c = hf([c[0] for c in ring], [c[1] for c in ring])
     ybase = float(rh_c.min()) - 3.0; ytop_w = float(rh_c.max()) + 7.0
-    wall = outer.difference(outer.buffer(-2.2))
     stone = hexrgb(0xcdb386); stone2 = hexrgb(0xc2a678); keepc = hexrgb(0xd9c398)
-    m = trimesh.creation.extrude_polygon(wall, ytop_w - ybase, engine="earcut")
-    v = m.vertices
-    castle_parts.append((np.column_stack([v[:, 0], ybase + v[:, 2], v[:, 1]]), m.faces[:, ::-1], np.tile(stone, (len(v), 1))))
-    # almenas
-    perim = outer.exterior.length; n = int(perim / 2.6)
-    for i in range(n):
-        pt = outer.exterior.interpolate(i * perim / n); pt2 = outer.exterior.interpolate(min(perim, i * perim / n + 0.5))
-        ang = -math.atan2(pt2.y - pt.y, pt2.x - pt.x)
-        inward = outer.buffer(-0.9).exterior.interpolate(outer.buffer(-0.9).exterior.project(pt))
-        castle_parts.append(box_at(inward.x, inward.y, ytop_w, ytop_w + 1.2, 1.3, 1.5, ang, stone))
-    # torres cuadradas cada ~45 m
+    perim = outer.exterior.length
+    segs = max(1, int(perim / 4.0))
+    for i in range(segs):
+        pa = outer.exterior.interpolate(i * perim / segs); pb = outer.exterior.interpolate((i + 1) * perim / segs)
+        ha, hb = float(hf(pa.x, pa.y)), float(hf(pb.x, pb.y)); hm = (ha + hb) / 2
+        L = math.hypot(pb.x - pa.x, pb.y - pa.y)
+        if L < 0.2: continue
+        ang = -math.atan2(pb.y - pa.y, pb.x - pa.x)
+        castle_parts.append(box_at((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, min(ha, hb) - 2.5, hm + 6.0, L + 0.25, 2.2, ang, stone))
+        for k in (0.25, 0.75):   # almenas
+            castle_parts.append(box_at(pa.x + (pb.x - pa.x) * k, pa.y + (pb.y - pa.y) * k, hm + 6.0, hm + 7.2, 1.4, 2.3, ang, stone))
+    # torres cuadradas cada ~45 m, a la altura local del terreno
     last = None
     for (x, z) in ring[:-1]:
         if last is None or math.hypot(x - last[0], z - last[1]) > 45:
-            castle_parts.append(box_at(x, z, ybase, ytop_w + 5.0, 6.0, 6.0, 0.4, stone2))
-            castle_parts.append(box_at(x, z, ytop_w + 5.0, ytop_w + 6.3, 6.6, 6.6, 0.4, stone))
+            g = float(hf(x, z))
+            castle_parts.append(box_at(x, z, g - 2.5, g + 11.0, 6.0, 6.0, 0.4, stone2))
+            castle_parts.append(box_at(x, z, g + 11.0, g + 12.3, 6.6, 6.6, 0.4, stone))
             last = (x, z)
     # torre del Homenaje
     rp = outer.representative_point()

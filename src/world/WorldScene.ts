@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ATMOSPHERE_SPECS } from '../game/constants';
 import type { AtmosphereMode, CameraPreset, CarPaintPreset, CarState } from '../types/game';
@@ -281,7 +282,19 @@ export class WorldScene {
     });
     // palmeras: tronco alto y fina corona de frondas
     const pt = mk(new THREE.CylinderGeometry(0.16, 0.26, 7, 6), trunkMat, palms.length);
-    const pf = mk(new THREE.ConeGeometry(2.6, 1.1, 8, 1, true), frondMat, palms.length);
+    const fronds: THREE.BufferGeometry[] = [];
+    for (let k = 0; k < 9; k++) {
+      const g = new THREE.BoxGeometry(0.42, 0.05, 3.4, 1, 1, 4);
+      g.translate(0, 0, 1.7);
+      const pos = g.getAttribute('position');
+      for (let i = 0; i < pos.count; i++) {   // frondas que se curvan hacia abajo
+        const z = pos.getZ(i);
+        pos.setY(i, pos.getY(i) - 0.045 * z * z);
+      }
+      g.rotateY((k / 9) * Math.PI * 2 + (k % 2) * 0.25);
+      fronds.push(g);
+    }
+    const pf = mk(mergeGeometries(fronds)!, frondMat, palms.length);
     palms.forEach(([x, z], i) => {
       const sc = 0.85 + ((i * 53) % 10) / 30;
       m.compose(new THREE.Vector3(x, heightAt(x, z) + 3.5 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pt.setMatrixAt(i, m);

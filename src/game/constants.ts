@@ -23,9 +23,9 @@ export const ALICANTE_LANDMARKS: LandmarkPreset[] = [
     id: 'castillo',
     name: 'Castillo Sta. Bárbara',
     zone: 'Monte Benacantil · Castillo de Santa Bárbara',
-    lat: 38.34941,
-    lng: -0.47830,
-    bearing: 194,
+    lat: 38.34945,
+    lng: -0.47819,
+    bearing: 228,
   },
   {
     id: 'ayuntamiento',
