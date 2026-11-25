@@ -116,6 +116,11 @@ export default function App() {
     setCurrentLandmarkId(landmark.id);
     carStateRef.current = createInitialCarState(landmark.lat, landmark.lng, landmark.bearing);
 
+    if (landmark.camera && landmark.camera !== cameraPresetRef.current) {
+      cameraPresetRef.current = landmark.camera;
+      setCameraPreset(landmark.camera);
+      worldRef.current?.setCameraPreset(landmark.camera);
+    }
     worldRef.current?.snapCamera();
     worldRef.current?.collision?.reset();
   }, []);
@@ -244,8 +249,9 @@ export default function App() {
     canvas.addEventListener('webglcontextrestored', onContextRestored);
 
     let disposed = false;
+    const startPos = toLocal(carStateRef.current.lat, carStateRef.current.lng);
     world
-      .loadWorld(import.meta.env.BASE_URL)
+      .init(import.meta.env.BASE_URL, startPos.x, startPos.z)
       .then(() => {
         if (disposed) return;
         // si el punto de salida cae dentro de un edificio, lo saca

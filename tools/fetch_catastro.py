@@ -11,7 +11,9 @@ from pyproj import Transformer
 
 LAT0, LNG0 = 38.3432, -0.4820
 KLAT = 111320.0; KLNG = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -1300, 950, -950, 750           # región del piloto + margen (m locales)
+sys.path.insert(0, os.path.dirname(__file__))
+from world_config import X0 as _X0, X1 as _X1, Z0 as _Z0, Z1 as _Z1
+X0, X1, Z0, Z1 = _X0 - 150, _X1 + 150, _Z0 - 150, _Z1 + 150   # toda la región por teselas + margen (m locales)
 T = Transformer.from_crs(25830, 4326, always_xy=True)
 URL = "https://www.catastro.hacienda.gob.es/INSPIRE/Buildings/03/03900-ALICANTE%20ALACANT/A.ES.SDGC.BU.03900.zip"
 DIR = "tools/data/catastro"
@@ -90,5 +92,5 @@ for el in stream(f"{DIR}/bu/A.ES.SDGC.BU.03900.building.gml", "Building"):
     buildings[ref] = {"use": text_of(el, "currentUse"), "year": int(yr) if yr.isdigit() else None}
 print("edificios", n, "guardados", len(buildings), flush=True)
 
-json.dump({"parts": parts, "buildings": buildings}, open("tools/data/catastro_piloto.json", "w"))
-print("OK", os.path.getsize("tools/data/catastro_piloto.json") // 1024, "KB")
+json.dump({"parts": parts, "buildings": buildings}, open("tools/data/catastro_ciudad.json", "w"))
+print("OK", os.path.getsize("tools/data/catastro_ciudad.json") // 1024, "KB")
