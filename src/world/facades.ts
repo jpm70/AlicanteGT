@@ -200,3 +200,36 @@ export function createFacadeAtlas(): { map: THREE.CanvasTexture; mask: THREE.Can
   };
   return { map: mk(cc, true), mask: mk(mc, false) };
 }
+
+/** Mosaico ondulado de la Explanada (rojo, negro y crema). UV: u = a lo largo del paseo, v = a lo ancho (9 m por tile). */
+export function createMosaicTexture(): THREE.CanvasTexture {
+  const W = 512, H = 512;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const c = cv.getContext('2d')!;
+  const cols = ['#e9dcc0', '#8e3b2f', '#27272b', '#e9dcc0', '#8e3b2f', '#27272b'];
+  const bands = cols.length, bh = H / bands;
+  c.fillStyle = cols[0];
+  c.fillRect(0, 0, W, H);
+  for (let b = 0; b < bands; b++) {
+    c.fillStyle = cols[b];
+    c.beginPath();
+    c.moveTo(0, H);
+    for (let x = 0; x <= W; x += 8) {
+      const y = b * bh + Math.sin((x / W) * Math.PI * 2) * bh * 0.55;
+      c.lineTo(x, y);
+    }
+    c.lineTo(W, H);
+    c.closePath();
+    c.fill();
+  }
+  c.strokeStyle = 'rgba(0,0,0,0.10)';
+  c.lineWidth = 1;
+  for (let i = 0; i <= W; i += 16) { c.beginPath(); c.moveTo(i, 0); c.lineTo(i, H); c.stroke(); }
+  for (let j = 0; j <= H; j += 16) { c.beginPath(); c.moveTo(0, j); c.lineTo(W, j); c.stroke(); }
+  const t = new THREE.CanvasTexture(c.canvas);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  return t;
+}

@@ -3,21 +3,29 @@ import type { AtmosphereMode, CarPaintPreset, LandmarkPreset } from '../types/ga
 export const OPENFREEMAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 
 export const INITIAL_VIEW = {
-  lng: -0.4820,
-  lat: 38.3432,
+  lng: -0.48323,
+  lat: 38.34317,
   zoom: 19.6,
   pitch: 74,
-  bearing: 55,
+  bearing: 63,
 };
 
 export const ALICANTE_LANDMARKS: LandmarkPreset[] = [
   {
     id: 'explanada',
-    name: 'Paseo Mártires',
-    zone: 'Paseo Mártires de la Libertad · Explanada',
-    lat: 38.3432,
-    lng: -0.4820,
-    bearing: 55,
+    name: 'Explanada',
+    zone: 'Explanada de España · Mosaico ondulado',
+    lat: 38.34317,
+    lng: -0.48323,
+    bearing: 63,
+  },
+  {
+    id: 'castillo',
+    name: 'Castillo Sta. Bárbara',
+    zone: 'Monte Benacantil · Castillo de Santa Bárbara',
+    lat: 38.34941,
+    lng: -0.47830,
+    bearing: 194,
   },
   {
     id: 'puerto',
@@ -175,7 +183,7 @@ export interface ZoneAnchor {
 
 export const ALICANTE_ZONES: ZoneAnchor[] = [
   { name: 'Paseo Mártires de la Libertad · Puerto', lat: 38.3432, lng: -0.4820 },
-  { name: 'Explanada de España', lat: 38.3446, lng: -0.4815 },
+  { name: 'Explanada de España', lat: 38.34317, lng: -0.48323 },
   { name: 'Puerto Deportivo de Alicante', lat: 38.3408, lng: -0.4832 },
   { name: 'Playa del Postiguet', lat: 38.3462, lng: -0.4758 },
   { name: 'Casco Antiguo · Santa Cruz', lat: 38.3474, lng: -0.4824 },

@@ -5,8 +5,8 @@ import { ATMOSPHERE_SPECS } from '../game/constants';
 import type { AtmosphereMode, CameraPreset, CarPaintPreset, CarState } from '../types/game';
 import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider } from './collision';
-import { toLocal } from './geo';
-import { createFacadeAtlas, FACADE_STYLES } from './facades';
+import { heightAt, setDem, toLocal, type DemData } from './geo';
+import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
 /** Las luces de constants.ts están pensadas para el coche solo; en un mundo claro saturan. */
@@ -22,7 +22,7 @@ const SKY: Record<AtmosphereMode, { sky: number; fog: number; fogFar: number }> 
 const CAM: Record<CameraPreset, { dist: number; height: number; look: number; fov: number }> = {
   chase: { dist: 7.2, height: 2.7, look: 7, fov: 62 },
   driver: { dist: -0.15, height: 1.12, look: 30, fov: 74 },
-  aerial: { dist: 26, height: 20, look: 6, fov: 55 },
+  aerial: { dist: 46, height: 38, look: 8, fov: 55 },
 };
 
 /** Escena Three.js propia: mundo .glb de Alicante + coche + cámara + colisiones. Sin MapLibre. */
@@ -41,6 +41,9 @@ export class WorldScene {
   private preset: CameraPreset = 'chase';
   private camBearing = 0;
   private camSnap = true;
+  private groundPitch = 0;
+  private groundRoll = 0;
+  private camGround = 0;
   private camPos = new THREE.Vector3();
   private ro: ResizeObserver;
   private mode: AtmosphereMode;
@@ -121,10 +124,12 @@ export class WorldScene {
         ca.needsUpdate = true;
       }
       m.receiveShadow = true;
-      m.castShadow = n === 'Walls' || n === 'Roofs';
+      m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle';
       m.material = n === 'Walls'
         ? this.makeWallMaterial()
-        : new THREE.MeshStandardMaterial({
+        : n === 'Mosaic'
+          ? new THREE.MeshStandardMaterial({ map: createMosaicTexture(), roughness: 0.6, metalness: 0.05 })
+          : new THREE.MeshStandardMaterial({
             vertexColors: true,
             flatShading: true,
             roughness: n === 'Road' ? 0.92 : n === 'Water' ? 0.12 : 0.85,
@@ -133,11 +138,13 @@ export class WorldScene {
       if (n === 'Water') m.receiveShadow = false;
     });
     this.scene.add(gltf.scene);
+    setDem((col.dem ?? null) as DemData | null);
     this.collision = new CollisionWorld([
       ...(col.buildings as BuildingCollider[]),
       ...((col.obstacles ?? []) as BuildingCollider[]),
     ]);
     this.addTrees((col.trees ?? []) as [number, number, number][]);
+    this.addLamps((col.lamps ?? []) as [number, number, number][]);
     onProgress?.(`Mundo listo · ${this.collision.count} edificios`);
   }
 
@@ -174,6 +181,38 @@ export class WorldScene {
     return mat;
   }
 
+  /** Farolas y semáforos instanciados. */
+  private addLamps(lamps: [number, number, number][]) {
+    const poles = lamps.filter((l) => l[2] === 0);
+    const sigs = lamps.filter((l) => l[2] === 1);
+    const metal = new THREE.MeshStandardMaterial({ color: 0x2c2f34, roughness: 0.6, metalness: 0.5 });
+    const glow = new THREE.MeshStandardMaterial({ color: 0xffe2a8, emissive: 0xffd48a, emissiveIntensity: 0.6, roughness: 0.4 });
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const one = new THREE.Vector3(1, 1, 1);
+    const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, n: number) => {
+      const im = new THREE.InstancedMesh(geo, mat, Math.max(n, 1));
+      im.frustumCulled = false;
+      this.scene.add(im);
+      return im;
+    };
+    const pp = mk(new THREE.CylinderGeometry(0.07, 0.1, 6, 6), metal, poles.length);
+    const ph = mk(new THREE.SphereGeometry(0.28, 8, 6), glow, poles.length);
+    poles.forEach(([x, z], i) => {
+      const y = heightAt(x, z);
+      m.compose(new THREE.Vector3(x, y + 3, z), q, one); pp.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, y + 6.1, z), q, one); ph.setMatrixAt(i, m);
+    });
+    const sp = mk(new THREE.CylinderGeometry(0.07, 0.09, 4, 6), metal, sigs.length);
+    const sh = mk(new THREE.BoxGeometry(0.35, 1.0, 0.3), metal, sigs.length);
+    sigs.forEach(([x, z], i) => {
+      const y = heightAt(x, z);
+      m.compose(new THREE.Vector3(x, y + 2, z), q, one); sp.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, y + 4.2, z), q, one); sh.setMatrixAt(i, m);
+    });
+    [pp, ph, sp, sh].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+  }
+
   /** Árboles y palmeras instanciados (posiciones reales de OSM). */
   private addTrees(trees: [number, number, number][]) {
     const palms = trees.filter((t) => t[2] === 1);
@@ -195,16 +234,16 @@ export class WorldScene {
     const bc = mk(new THREE.IcosahedronGeometry(1.9, 1), leafMat, broad.length);
     broad.forEach(([x, z], i) => {
       const sc = 0.8 + ((i * 37) % 10) / 25;
-      m.compose(new THREE.Vector3(x, 1.3, z), q, new THREE.Vector3(1, 1, 1)); bt.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, heightAt(x, z) + 1.3, z), q, new THREE.Vector3(1, 1, 1)); bt.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, heightAt(x, z) + 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
     });
     // palmeras: tronco alto y fina corona de frondas
     const pt = mk(new THREE.CylinderGeometry(0.16, 0.26, 7, 6), trunkMat, palms.length);
     const pf = mk(new THREE.ConeGeometry(2.6, 1.1, 8, 1, true), frondMat, palms.length);
     palms.forEach(([x, z], i) => {
       const sc = 0.85 + ((i * 53) % 10) / 30;
-      m.compose(new THREE.Vector3(x, 3.5 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pt.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, 7.2 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pf.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, heightAt(x, z) + 3.5 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pt.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, heightAt(x, z) + 7.2 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pf.setMatrixAt(i, m);
     });
     [bt, bc, pt, pf].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
   }
@@ -261,8 +300,21 @@ export class WorldScene {
   render(state: CarState, dt: number) {
     const p = toLocal(state.lat, state.lng);
     this.rig.updateFromState(state, dt);
-    this.rig.root.position.set(p.x, 0.02, p.z);
-    this.rig.root.rotation.y = -(state.headingDeg * DEG) - state.driftSlipRad * 0.45;
+    const gy = heightAt(p.x, p.z);
+    const hd = state.headingDeg * DEG;
+    const ahead = heightAt(p.x + Math.sin(hd) * 1.9, p.z - Math.cos(hd) * 1.9);
+    const behind = heightAt(p.x - Math.sin(hd) * 1.9, p.z + Math.cos(hd) * 1.9);
+    const side =
+      heightAt(p.x + Math.cos(hd) * 0.9, p.z + Math.sin(hd) * 0.9) -
+      heightAt(p.x - Math.cos(hd) * 0.9, p.z - Math.sin(hd) * 0.9);
+    this.groundPitch += (Math.atan2(ahead - behind, 3.8) - this.groundPitch) * (1 - Math.exp(-10 * dt));
+    this.groundRoll += (Math.atan2(side, 1.8) - this.groundRoll) * (1 - Math.exp(-10 * dt));
+    this.camGround += (gy - this.camGround) * (1 - Math.exp(-6 * dt));
+    this.rig.root.rotation.order = 'YXZ';
+    this.rig.root.position.set(p.x, gy + 0.05, p.z);
+    this.rig.root.rotation.y = -hd - state.driftSlipRad * 0.45;
+    this.rig.root.rotation.x = this.groundPitch;
+    this.rig.root.rotation.z = this.groundRoll;
 
     const cfg = CAM[this.preset];
     const driver = this.preset === 'driver';
@@ -279,7 +331,7 @@ export class WorldScene {
     const speedBack = Math.min(Math.abs(state.speedMps) / 56, 1) * (driver ? 0 : 2.2);
     const tx = p.x - fx * (cfg.dist + speedBack);
     const tz = p.z - fz * (cfg.dist + speedBack);
-    const ty = cfg.height;
+    const ty = cfg.height + this.camGround;
     if (this.camSnap) {
       this.camPos.set(tx, ty, tz);
       this.camSnap = false;
@@ -290,7 +342,7 @@ export class WorldScene {
       this.camPos.z = damp(this.camPos.z, tz, l, dt);
     }
     this.camera.position.copy(this.camPos);
-    this.camera.lookAt(p.x + fx * cfg.look, driver ? 1.1 : 1.0, p.z + fz * cfg.look);
+    this.camera.lookAt(p.x + fx * cfg.look, this.camGround + (driver ? 1.1 : 1.0), p.z + fz * cfg.look);
     const fov = cfg.fov + Math.min(Math.abs(state.speedMps) / 56, 1) * 8;
     if (Math.abs(this.camera.fov - fov) > 0.05) {
       this.camera.fov = fov;
@@ -299,8 +351,8 @@ export class WorldScene {
 
     // sombra y luz siguen al coche
     const kp = ATMOSPHERE_SPECS[this.mode].keyPosition;
-    this.key.position.set(p.x + kp[0] * 6, Math.abs(kp[1]) * 6 + 40, p.z + kp[2] * 6);
-    this.key.target.position.set(p.x, 0, p.z);
+    this.key.position.set(p.x + kp[0] * 6, gy + Math.abs(kp[1]) * 6 + 40, p.z + kp[2] * 6);
+    this.key.target.position.set(p.x, gy, p.z);
     this.rim.position.set(p.x + 14, 9, p.z + 16);
 
     this.renderer.render(this.scene, this.camera);
