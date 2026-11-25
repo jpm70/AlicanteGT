@@ -82,15 +82,96 @@ for e in ways(load("building")):
     collid.append({"id":e["id"],"h":round(h,1),"p":[[round(x,2),round(z,2)] for x,z in poly.exterior.coords]})
 buildings = trimesh.util.concatenate(bmeshes)
 
+# ---- costa -> mar (OSM: tierra a la izquierda, mar a la derecha del sentido de la línea)
+def chain_coast():
+    ws = [e for e in load("coast") if e.get("tags",{}).get("natural")=="coastline" and len(e.get("geometry",[]))>=2]
+    key = lambda pt: (round(pt["lat"],7), round(pt["lon"],7))
+    by_start = {key(e["geometry"][0]): e for e in ws}
+    ends = {key(e["geometry"][-1]) for e in ws}
+    start = [e for e in ws if key(e["geometry"][0]) not in ends]
+    if not start: return []
+    pts, cur, seen = [], start[0], set()
+    while cur and cur["id"] not in seen:
+        seen.add(cur["id"]); pts += [P(p) for p in cur["geometry"]]
+        cur = by_start.get(key(cur["geometry"][-1]))
+    return pts
+coast = chain_coast()
+sea = Polygon()
+if len(coast) > 2:
+    def right(a, b, d=4000):
+        dx, dz = b[0]-a[0], b[1]-a[1]; l = math.hypot(dx, dz) or 1
+        # sentido x este, z sur: "derecha" del trayecto = (-dz, dx)·(-1)... se comprueba abajo
+        return (-dz/l*d, dx/l*d)
+    r0 = right(coast[0], coast[1]); r1 = right(coast[-2], coast[-1])
+    cand = Polygon(coast + [(coast[-1][0]+r1[0], coast[-1][1]+r1[1]), (coast[0][0]+r0[0], coast[0][1]+r0[1])])
+    # el mar debe contener un punto claramente al SE de la Explanada (playa/puerto lado mar)
+    probe = Polygon(cand).buffer(0)
+    if not probe.contains(__import__("shapely.geometry",fromlist=["Point"]).Point(-300, 300)):
+        r0 = (-r0[0], -r0[1]); r1 = (-r1[0], -r1[1])
+        probe = Polygon(coast + [(coast[-1][0]+r1[0], coast[-1][1]+r1[1]), (coast[0][0]+r0[0], coast[0][1]+r0[1])]).buffer(0)
+    sea = probe
+EXT = box(-1700, -1100, 900, 900)
+sea = sea.intersection(EXT) if not sea.is_empty else sea
+
+# muelles/espigones: tierra firme sobre el mar
+pier_geoms = []
+for e in ways(load("pier")):
+    pts = [P(p) for p in e["geometry"]]
+    try: pier_geoms.append(Polygon(pts).buffer(0) if pts[0]==pts[-1] and len(pts)>3 else LineString(pts).buffer(3.5, cap_style=2))
+    except Exception: pass
+piers = unary_union(pier_geoms) if pier_geoms else Polygon()
+sea_free = sea.difference(piers.buffer(0.2)) if not sea.is_empty else sea
+
+# parques / jardines
+park_geoms = []
+for e in ways(load("parks")):
+    pts = [P(p) for p in e["geometry"]]
+    if len(pts) >= 4 and pts[0] == pts[-1]:
+        try: park_geoms.append(make_valid(Polygon(pts)).buffer(0))
+        except Exception: pass
+parks = unary_union(park_geoms).difference(roads).difference(sea_free) if park_geoms else Polygon()
+
+# árboles (OSM) -> colliders.json; palmeras si lo indica el etiquetado
+trees = []
+for e in load("trees"):
+    if e.get("type") != "node": continue
+    t = e.get("tags", {}); x, z = P(e)
+    sp = (t.get("species","") + t.get("genus","") + t.get("species:en","")).lower()
+    palm = t.get("leaf_type") == "palm_leaved" or "phoenix" in sp or "washingtonia" in sp or "palm" in sp
+    trees.append([round(x,2), round(z,2), 1 if palm else 0])
+tree_obst = []
+for x, z, _ in trees:
+    tree_obst.append({"id":0,"h":4,"p":[[round(x+0.4*math.cos(a*math.pi/4),2), round(z+0.4*math.sin(a*math.pi/4),2)] for a in range(9)]})
+
+lamps = []
+for e in load("lamps"):
+    if e.get("type") == "node":
+        x, z = P(e); lamps.append([round(x,2), round(z,2), 1 if e.get("tags",{}).get("highway")=="traffic_signals" else 0])
+
 # ---- suelo
-ext = box(-1700, -1100, 900, 900)
+land = EXT.difference(sea) if not sea.is_empty else EXT
+land = unary_union([land, piers.intersection(EXT)])
 scene = trimesh.Scene()
-g = tri_mesh(ext, 0.0, hexrgb(0xb7ad98)); scene.add_geometry(g, node_name="Ground", geom_name="Ground")
-r = tri_mesh(roads, 0.03, hexrgb(0x3a3d42)); scene.add_geometry(r, node_name="Road", geom_name="Road")
-s = tri_mesh(walk, 0.06, hexrgb(0xc9c0ab)); scene.add_geometry(s, node_name="Sidewalk", geom_name="Sidewalk")
+def add(name, geom, y, col):
+    m = tri_mesh(geom, y, col)
+    if m is not None: scene.add_geometry(m, node_name=name, geom_name=name)
+add("Ground", land, 0.0, hexrgb(0xb7ad98))
+add("Park", parks, 0.02, hexrgb(0x5f8a4a))
+add("Road", roads.difference(sea_free), 0.03, hexrgb(0x3a3d42))
+add("Sidewalk", walk.difference(sea_free), 0.06, hexrgb(0xc9c0ab))
+add("Water", sea_free if not sea_free.is_empty else Polygon(), -0.45, hexrgb(0x1d6fa5))
 scene.add_geometry(buildings, node_name="Buildings", geom_name="Buildings")
 os.makedirs("public/world", exist_ok=True)
 scene.export("public/world/alicante.glb")
-json.dump({"origin":{"lat":LAT0,"lng":LNG0},"buildings":collid,"roads":road_lines,
-           "roadPolys":[[round(x,2) for x in c] for c in []]}, open("public/world/colliders.json","w"))
-print("edificios", len(collid), "calles", len(road_lines), "glb KB", os.path.getsize("public/world/alicante.glb")//1024)
+sea_tiles = []
+if not sea_free.is_empty:
+    T = 150
+    for gx in range(-1700, 900, T):
+        for gz in range(-1100, 900, T):
+            part = sea_free.intersection(box(gx, gz, gx+T, gz+T))
+            for g in ([part] if isinstance(part, Polygon) else list(getattr(part, "geoms", []))):
+                if isinstance(g, Polygon) and g.area > 4:
+                    sea_tiles.append({"id":-1,"h":0,"p":[[round(x,2),round(z,2)] for x,z in g.exterior.coords]})
+json.dump({"origin":{"lat":LAT0,"lng":LNG0},"buildings":collid,"obstacles":tree_obst+sea_tiles,
+           "roads":road_lines,"trees":trees,"lamps":lamps}, open("public/world/colliders.json","w"))
+print("mar m2", int(sea_free.area), "tiles", len(sea_tiles), "arboles", len(trees), "parques m2", int(parks.area), "farolas", len(lamps), "|", "edificios", len(collid), "calles", len(road_lines), "glb KB", os.path.getsize("public/world/alicante.glb")//1024)

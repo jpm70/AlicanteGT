@@ -121,13 +121,53 @@ export class WorldScene {
       m.castShadow = n === 'Buildings';
       m.material = new THREE.MeshStandardMaterial({
         vertexColors: true,
-        roughness: n === 'Road' ? 0.92 : 0.85,
-        metalness: 0,
+        roughness: n === 'Road' ? 0.92 : n === 'Water' ? 0.12 : 0.85,
+        metalness: n === 'Water' ? 0.25 : 0,
       });
+      if (n === 'Water') m.receiveShadow = false;
     });
     this.scene.add(gltf.scene);
-    this.collision = new CollisionWorld(col.buildings as BuildingCollider[]);
+    this.collision = new CollisionWorld([
+      ...(col.buildings as BuildingCollider[]),
+      ...((col.obstacles ?? []) as BuildingCollider[]),
+    ]);
+    this.addTrees((col.trees ?? []) as [number, number, number][]);
     onProgress?.(`Mundo listo · ${this.collision.count} edificios`);
+  }
+
+  /** Árboles y palmeras instanciados (posiciones reales de OSM). */
+  private addTrees(trees: [number, number, number][]) {
+    const palms = trees.filter((t) => t[2] === 1);
+    const broad = trees.filter((t) => t[2] === 0);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f35, roughness: 0.95 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.9 });
+    const frondMat = new THREE.MeshStandardMaterial({ color: 0x4f8f3c, roughness: 0.85, side: THREE.DoubleSide });
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, n: number) => {
+      const im = new THREE.InstancedMesh(geo, mat, Math.max(n, 1));
+      im.castShadow = true;
+      im.frustumCulled = false;
+      this.scene.add(im);
+      return im;
+    };
+    // árboles de hoja ancha: tronco + copa
+    const bt = mk(new THREE.CylinderGeometry(0.12, 0.2, 2.6, 6), trunkMat, broad.length);
+    const bc = mk(new THREE.IcosahedronGeometry(1.9, 1), leafMat, broad.length);
+    broad.forEach(([x, z], i) => {
+      const sc = 0.8 + ((i * 37) % 10) / 25;
+      m.compose(new THREE.Vector3(x, 1.3, z), q, new THREE.Vector3(1, 1, 1)); bt.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
+    });
+    // palmeras: tronco alto y fina corona de frondas
+    const pt = mk(new THREE.CylinderGeometry(0.16, 0.26, 7, 6), trunkMat, palms.length);
+    const pf = mk(new THREE.ConeGeometry(2.6, 1.1, 8, 1, true), frondMat, palms.length);
+    palms.forEach(([x, z], i) => {
+      const sc = 0.85 + ((i * 53) % 10) / 30;
+      m.compose(new THREE.Vector3(x, 3.5 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pt.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, 7.2 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pf.setMatrixAt(i, m);
+    });
+    [bt, bc, pt, pf].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
   }
 
   private applySky() {
