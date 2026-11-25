@@ -6,6 +6,7 @@ import type { AtmosphereMode, CameraPreset, CarPaintPreset, CarState } from '../
 import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider } from './collision';
 import { toLocal } from './geo';
+import { createFacadeAtlas, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
 /** Las luces de constants.ts están pensadas para el coche solo; en un mundo claro saturan. */
@@ -44,6 +45,7 @@ export class WorldScene {
   private ro: ResizeObserver;
   private mode: AtmosphereMode;
   private envTarget: THREE.WebGLRenderTarget | null = null;
+  private wallUniforms = { uMask: { value: null as THREE.Texture | null }, uNight: { value: 0 } };
 
   constructor(
     private container: HTMLElement,
@@ -87,6 +89,7 @@ export class WorldScene {
     this.scene.add(this.rig.root);
 
     this.scene.fog = this.fog;
+    this.wallUniforms.uNight.value = mode === 'night' ? 1 : mode === 'sunset' ? 0.3 : 0;
     this.applySky();
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -118,12 +121,15 @@ export class WorldScene {
         ca.needsUpdate = true;
       }
       m.receiveShadow = true;
-      m.castShadow = n === 'Buildings';
-      m.material = new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        roughness: n === 'Road' ? 0.92 : n === 'Water' ? 0.12 : 0.85,
-        metalness: n === 'Water' ? 0.25 : 0,
-      });
+      m.castShadow = n === 'Walls' || n === 'Roofs';
+      m.material = n === 'Walls'
+        ? this.makeWallMaterial()
+        : new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            flatShading: true,
+            roughness: n === 'Road' ? 0.92 : n === 'Water' ? 0.12 : 0.85,
+            metalness: n === 'Water' ? 0.25 : 0,
+          });
       if (n === 'Water') m.receiveShadow = false;
     });
     this.scene.add(gltf.scene);
@@ -133,6 +139,39 @@ export class WorldScene {
     ]);
     this.addTrees((col.trees ?? []) as [number, number, number][]);
     onProgress?.(`Mundo listo · ${this.collision.count} edificios`);
+  }
+
+  /** Material de muros: atlas de fachadas (estilo en u/1000, plantas en v) + ventanas iluminadas de noche. */
+  private makeWallMaterial(): THREE.MeshStandardMaterial {
+    const { map, mask } = createFacadeAtlas();
+    this.wallUniforms.uMask.value = mask;
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, map, roughness: 0.88, metalness: 0 });
+    const u = this.wallUniforms;
+    mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uMask = u.uMask;
+      sh.uniforms.uNight = u.uNight;
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+          uniform sampler2D uMask;
+          uniform float uNight;
+          float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
+        .replace('#include <map_fragment>', `
+          float stl = floor(vMapUv.x / 1000.0 + 0.0001);
+          vec2 cuv = vec2(vMapUv.x - stl * 1000.0, vMapUv.y);
+          float row = floor(cuv.y) < 1.0 ? 0.0 : 1.0;
+          vec2 fc = fract(cuv);
+          const float NS = ${FACADE_STYLES}.0;
+          vec2 auv = vec2((stl + fc.x * 0.96 + 0.02) / NS, (row + fc.y * 0.96 + 0.02) * 0.5);
+          vec2 gx = vec2(dFdx(cuv.x) * 0.96 / NS, dFdx(cuv.y) * 0.48);
+          vec2 gy = vec2(dFdy(cuv.x) * 0.96 / NS, dFdy(cuv.y) * 0.48);
+          vec4 fac = textureGrad(map, auv, gx, gy);
+          float win = textureGrad(uMask, auv, gx, gy).r;
+          diffuseColor *= vec4(fac.rgb, 1.0);
+          float lit = step(0.55, h21(floor(cuv) + vec2(stl * 7.0, 3.0)));
+          totalEmissiveRadiance += win * lit * uNight * vec3(1.0, 0.74, 0.4) * 1.4;
+        `);
+    };
+    return mat;
   }
 
   /** Árboles y palmeras instanciados (posiciones reales de OSM). */
@@ -172,6 +211,7 @@ export class WorldScene {
 
   private applySky() {
     const s = SKY[this.mode];
+    this.scene.environmentIntensity = this.mode === 'night' ? 0.1 : this.mode === 'sunset' ? 0.55 : 0.9;
     this.scene.background = new THREE.Color(s.sky);
     this.fog.color.setHex(s.fog);
     this.fog.far = s.fogFar;
@@ -189,6 +229,7 @@ export class WorldScene {
     this.rim.color.setHex(spec.rimColor);
     this.rim.intensity = spec.rimIntensity * LK;
     this.rig.setAtmosphere(mode);
+    this.wallUniforms.uNight.value = mode === 'night' ? 1 : mode === 'sunset' ? 0.3 : 0;
     this.applySky();
   }
 
