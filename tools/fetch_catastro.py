@@ -11,7 +11,7 @@ from pyproj import Transformer
 
 LAT0, LNG0 = 38.3432, -0.4820
 KLAT = 111320.0; KLNG = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -750, 950, -950, 750           # región del piloto + margen (m locales)
+X0, X1, Z0, Z1 = -1300, 950, -950, 750           # región del piloto + margen (m locales)
 T = Transformer.from_crs(25830, 4326, always_xy=True)
 URL = "https://www.catastro.hacienda.gob.es/INSPIRE/Buildings/03/03900-ALICANTE%20ALACANT/A.ES.SDGC.BU.03900.zip"
 DIR = "tools/data/catastro"

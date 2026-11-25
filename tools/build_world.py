@@ -24,8 +24,15 @@ def P(pt): return ((pt["lon"] - LNG0) * KLNG, -(pt["lat"] - LAT0) * KLAT)   # (x
 D = "tools/data/"
 
 def load(n):
-    f = D + f"osm_{n}.json"
-    return json.load(open(f)) if os.path.exists(f) else []
+    """Lee osm_<n>.json y, si existe, la franja oeste osm_<n>_west.json (sin duplicados)."""
+    out, seen = [], set()
+    for f in (D + f"osm_{n}.json", D + f"osm_{n}_west.json"):
+        if os.path.exists(f):
+            for e in json.load(open(f)):
+                k = (e.get("type"), e.get("id"))
+                if k in seen: continue
+                seen.add(k); out.append(e)
+    return out
 
 
 ROAD_W = {"motorway":12,"trunk":11,"primary":10,"secondary":8.5,"tertiary":7.5,"residential":6.2,
@@ -181,6 +188,47 @@ def edge_angle_to(poly, pt):
         if best is None or d < best[0]: best = (d, -math.atan2(b[1] - a[1], b[0] - a[0]))
     return best[1]
 
+
+def cyl_at(cx, cz, ybase, ytop, r, col, sections=28):
+    m = trimesh.creation.cylinder(radius=r, height=ytop - ybase, sections=sections)
+    m.apply_transform(trimesh.transformations.rotation_matrix(-math.pi / 2, [1, 0, 0]))
+    m.apply_translation([cx, (ybase + ytop) / 2, cz])
+    V = np.asarray(m.vertices); return V, np.asarray(m.faces), _vc(V, col)
+
+def statue_at(cx, cz, y, sc, col, star=True):
+    """Figura estilizada: falda cónica, torso, cabeza, brazos en alto y estrella."""
+    parts = []
+    cone = trimesh.creation.cone(radius=0.75 * sc, height=2.3 * sc, sections=16)
+    cone.apply_transform(trimesh.transformations.rotation_matrix(-math.pi / 2, [1, 0, 0])); cone.apply_translation([cx, y, cz])
+    V = np.asarray(cone.vertices); parts.append((V, np.asarray(cone.faces), _vc(V, col)))
+    parts.append(cyl_at(cx, cz, y + 2.1 * sc, y + 3.1 * sc, 0.34 * sc, col, 12))
+    parts.append(dome_at(cx, cz, y + 3.05 * sc, 0.3 * sc, 0.34 * sc, col))
+    for sgn in (-1, 1):   # brazos en alto
+        b = trimesh.creation.box(extents=[0.18 * sc, 1.2 * sc, 0.18 * sc])
+        b.apply_transform(trimesh.transformations.rotation_matrix(sgn * 0.45, [0, 0, 1]))
+        b.apply_translation([cx + sgn * 0.62 * sc, y + 3.55 * sc, cz])
+        V = np.asarray(b.vertices); parts.append((V, np.asarray(b.faces), _vc(V, col)))
+    if star:
+        st = trimesh.creation.icosphere(subdivisions=1, radius=0.38 * sc)
+        st.apply_translation([cx, y + 4.55 * sc, cz])
+        V = np.asarray(st.vertices); parts.append((V, np.asarray(st.faces), _vc(V, hexrgb(0xf0d27a))))
+        for ang in (0, math.pi / 2):
+            r_ = trimesh.creation.box(extents=[1.5 * sc, 0.12 * sc, 0.12 * sc])
+            r_.apply_transform(trimesh.transformations.rotation_matrix(ang + math.pi / 4, [0, 0, 1]))
+            r_.apply_translation([cx, y + 4.55 * sc, cz])
+            V = np.asarray(r_.vertices); parts.append((V, np.asarray(r_.faces), _vc(V, hexrgb(0xf0d27a))))
+    return parts
+
+def fountain_at(cx, cz, R, sc, stone, water, bronze, star=True):
+    g = float(hf(cx, cz)); parts = []
+    parts.append(cyl_at(cx, cz, g - 0.5, g + 0.95, R, stone, 40))               # borde del estanque
+    parts.append(cyl_at(cx, cz, g + 0.5, g + 0.82, R - 0.8, water, 40))         # agua
+    parts.append(cyl_at(cx, cz, g + 0.5, g + 1.3, R * 0.34, stone, 28))         # taza central
+    parts.append(cyl_at(cx, cz, g + 0.5, g + 2.4 * sc, 0.55 * sc, stone, 16))   # pedestal
+    parts.append(cyl_at(cx, cz, g + 2.4 * sc, g + 2.9 * sc, 0.95 * sc, stone, 16))
+    parts += statue_at(cx, cz, g + 2.9 * sc, sc, bronze, star)
+    return parts
+
 PLAZA = (82.0, -195.0)            # Plaza del Ayuntamiento
 SANTA_CRUZ = (-110.0, -470.0, 135.0)   # barrio de Santa Cruz (cx, cz, radio)
 LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_SOL = 265207919, 83998999, 22560738, 21410214, 515871894, 53271502
@@ -327,6 +375,7 @@ for e in ways(load("building")):
         elif math.hypot(_c.x - SANTA_CRUZ[0], _c.y - SANTA_CRUZ[1]) < SANTA_CRUZ[2]:
             col = hexrgb(SC_COLS[seed % len(SC_COLS)]); st = 2
         if e["id"] == LM_SOL: st = 1
+        if e["id"] == LM_MERCAT: rcol = hexrgb(0xb7b0a0)
 
         ext = list(poly.exterior.coords)
         rh = hf([c[0] for c in ext], [c[1] for c in ext]); ytop = float(rh.max()) + h
@@ -353,7 +402,36 @@ for e in ways(load("building")):
                     tx, tz = toward_centroid(poly, q, 3.8)
                     lm_parts += tower_at(tx, tz, float(rh.min()) - 0.5, ytop + 10.0, 6.0, ang, stone, hexrgb(0xb2593a), 6.5)
             elif e["id"] == LM_MERCAT:
-                lm_parts.append(dome_at(cc.x, cc.y, ytop - 0.5, 9.0, 5.5, hexrgb(0x7e9a8e)))
+                mr = poly.minimum_rotated_rectangle; mc = list(mr.exterior.coords)[:4]
+                e1 = (mc[1][0] - mc[0][0], mc[1][1] - mc[0][1]); ang_m = -math.atan2(e1[1], e1[0])
+                green = hexrgb(0x5f8f8a); cream = hexrgb(0xf1dea0)
+                lm_parts.append(cyl_at(cc.x, cc.y, ytop - 0.5, ytop + 3.0, 7.5, hexrgb(0xe9d89a)))
+                lm_parts.append(dome_at(cc.x, cc.y, ytop + 3.0, 7.5, 5.5, green))
+                lm_parts.append(cyl_at(cc.x, cc.y, ytop + 8.0, ytop + 10.5, 1.0, cream, 12))
+                lm_parts.append(dome_at(cc.x, cc.y, ytop + 10.5, 1.2, 1.6, green))
+                for q in mc:
+                    tx, tz = toward_centroid(poly, q, 3.5)
+                    lm_parts += tower_at(tx, tz, float(rh.min()) - 0.5, ytop + 5.0, 5.5, ang_m, cream, green, 6.0)
+                best = None
+                for r_ in road_lines:
+                    if r_["k"] not in ("primary", "secondary"): continue
+                    for (rx, rz) in r_["p"]:
+                        dd = math.hypot(rx - cc.x, rz - cc.y)
+                        if dd < 90 and (best is None or dd < best[0]): best = (dd, rx, rz)
+                if best:
+                    pxy = (best[1], best[2]); be = None
+                    for a_, b_ in zip(mc, mc[1:] + mc[:1]):
+                        mid = ((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2); dd = math.hypot(mid[0] - pxy[0], mid[1] - pxy[1])
+                        if be is None or dd < be[0]: be = (dd, a_, b_, mid)
+                    _, a_, b_, mid = be
+                    dx, dz = b_[0] - a_[0], b_[1] - a_[1]; ll = math.hypot(dx, dz) or 1; dx, dz = dx / ll, dz / ll
+                    nx, nz = dz, -dx
+                    if nx * (pxy[0] - mid[0]) + nz * (pxy[1] - mid[1]) < 0: nx, nz = -nx, -nz
+                    angp = -math.atan2(dz, dx); gg = float(hf(mid[0], mid[1]))
+                    for sg in (-1, 1):
+                        lm_parts.append(box_at(mid[0] + dx * sg * 4.2 + nx * 0.7, mid[1] + dz * sg * 4.2 + nz * 0.7, gg - 0.3, gg + 9.5, 1.8, 2.4, angp, cream))
+                    lm_parts.append(box_at(mid[0] + nx * 0.7, mid[1] + nz * 0.7, gg + 9.5, gg + 12.5, 10.8, 2.4, angp, cream))
+                    lm_parts.append(box_at(mid[0] + nx * 0.2, mid[1] + nz * 0.2, gg - 0.3, gg + 9.5, 6.8, 0.6, angp, hexrgb(0x2b2622)))
             elif e["id"] == LM_AUDIT:
                 lm_parts.append(dome_at(cc.x, cc.y, ytop - 0.5, 7.0, 6.0, hexrgb(0xf4f1ea)))
         collid.append({"id": e["id"], "h": round(h, 1), "p": [[round(x, 2), round(z, 2)] for x, z in poly.exterior.coords]})
@@ -492,6 +570,23 @@ add("Water", sea_free if not sea_free.is_empty else Polygon(), 0.0, hexrgb(0x1d6
 _w = tri_mesh(sea_free if not sea_free.is_empty else Polygon(), -0.45, hexrgb(0x1d6fa5))
 if _w is not None: parts.append(("Water", np.asarray(_w.vertices), np.asarray(_w.faces), np.asarray(_w.visual.vertex_colors), None))
 
+
+# ---- fuentes con estatua: Luceros (Plaça dels Estels, centro del parque circular) y Fuente de la Aguadora
+lm_obst = []
+stone_c = hexrgb(0xd9d3c3); water_c = hexrgb(0x4aa3d6); bronze_c = hexrgb(0x6b5a3a)
+for pk in load("parks"):
+    if pk.get("id") == 22780080 and len(pk.get("geometry", [])) >= 4:
+        pg = Polygon([P(q) for q in pk["geometry"]]).buffer(0); cpt = pg.centroid
+        lm_parts += fountain_at(cpt.x, cpt.y, 9.0, 1.6, stone_c, water_c, bronze_c)
+        lm_obst.append({"id": -3, "h": 4, "p": [[round(cpt.x + 9.2 * math.cos(a * math.pi / 8), 2), round(cpt.y + 9.2 * math.sin(a * math.pi / 8), 2)] for a in range(17)]})
+        print("Luceros: fuente en", int(cpt.x), int(cpt.y))
+for wt in load("coast"):
+    if wt.get("id") == 742351711 and len(wt.get("geometry", [])) >= 4:
+        pg = Polygon([P(q) for q in wt["geometry"]]).buffer(0); cpt = pg.centroid
+        lm_parts += fountain_at(cpt.x, cpt.y, 3.2, 0.9, stone_c, water_c, bronze_c, star=False)
+        lm_obst.append({"id": -4, "h": 3, "p": [[round(cpt.x + 3.4 * math.cos(a * math.pi / 8), 2), round(cpt.y + 3.4 * math.sin(a * math.pi / 8), 2)] for a in range(17)]})
+        print("Aguadora: fuente en", int(cpt.x), int(cpt.y))
+
 # ---- Castillo de Santa Bárbara (Benacantil): murallas sobre la cota alta del DEM, torres y torre del Homenaje
 def box_at(cx, cz, ybase, ytop, sx, sz, ang, col):
     b = trimesh.creation.box(extents=[sx, ytop - ybase, sz])
@@ -605,7 +700,7 @@ if not sea_free.is_empty:
                 if isinstance(g, Polygon) and g.area > 4:
                     sea_tiles.append({"id":-1,"h":0,"p":[[round(x,2),round(z,2)] for x,z in g.exterior.coords]})
 
-json.dump({"origin":{"lat":LAT0,"lng":LNG0},"buildings":collid,"obstacles":tree_obst+sea_tiles+castle_obst,
+json.dump({"origin":{"lat":LAT0,"lng":LNG0},"buildings":collid,"obstacles":tree_obst+sea_tiles+castle_obst+lm_obst,
            "roads":road_lines,"trees":trees,"lamps":lamps,
            "drive":{"x0":dx0,"z0":dz0,"cell":DC,"nx":dnx,"nz":dnz,"bits":drive_b64},
            "dem":{"x0":DX0,"z0":DZ0,"step":DST,"nx":len(DXS),"nz":len(DZS),"h":[round(float(v),1) for v in HG.reshape(-1)]}}, open("public/world/colliders.json","w"))

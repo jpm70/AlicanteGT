@@ -2,6 +2,9 @@
 Consultas pequeñas por categoría, con reintentos y varios espejos."""
 import json, os, sys, time, requests
 S, W, N, E = 38.3395, -0.4905, 38.3515, -0.4715   # Explanada · Rambla · Luceros · Postiguet
+SUF = ""
+if len(sys.argv) > 1 and sys.argv[1] == "west":   # franja oeste: Plaza de los Luceros (Plaça dels Estels) y alrededores
+    W, E, SUF = -0.4965, -0.4903, "_west"
 BB = f"({S},{W},{N},{E})"
 MIRRORS = ["https://overpass-api.de/api/interpreter",
            "https://overpass.private.coffee/api/interpreter",
@@ -20,7 +23,7 @@ H = {"User-Agent": "alicantegt-build/1.0", "Accept": "application/json"}
 out = {}
 for name, body in PARTS.items():
     q = f"[out:json][timeout:60];({body});out body geom;"
-    cache = f"tools/data/osm_{name}.json"
+    cache = f"tools/data/osm_{name}{SUF}.json"
     if os.path.exists(cache):
         out[name] = json.load(open(cache)); print(name, "(cache)", len(out[name]), flush=True); continue
     got = None
@@ -35,5 +38,5 @@ for name, body in PARTS.items():
         time.sleep(8)
     if got is None: sys.exit(f"no se pudo descargar {name}")
     json.dump(got, open(cache, "w")); out[name] = got; print(name, len(got), flush=True)
-json.dump(out, open("tools/data/osm_piloto.json", "w"))
+if not SUF: json.dump(out, open("tools/data/osm_piloto.json", "w"))
 print("OK")

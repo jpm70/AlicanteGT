@@ -11,7 +11,7 @@ import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades
 
 const DEG = Math.PI / 180;
 /** Región cubierta por public/world/ortho.jpg (m locales); coincide con tools/fetch_ortho.py. */
-const ORTHO = { x0: -700, z0: -900, w: 1600, h: 1600 };
+const ORTHO = { x0: -1148, z0: -900, w: 2048, h: 1536 };
 /** Las luces de constants.ts están pensadas para el coche solo; en un mundo claro saturan. */
 const LK = 0.5;
 const damp = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));

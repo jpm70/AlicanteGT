@@ -52,6 +52,14 @@ export const ALICANTE_LANDMARKS: LandmarkPreset[] = [
     bearing: 110,
   },
   {
+    id: 'luceros',
+    name: 'Plaza de Luceros',
+    zone: 'Plaza de los Luceros · Fuente y estatua',
+    lat: 38.34625,
+    lng: -0.49104,
+    bearing: 130,
+  },
+  {
     id: 'puerto',
     name: 'Puerto Deportivo',
     zone: 'Muelle de Levante · Marina de Alicante',
@@ -216,7 +224,7 @@ export const ALICANTE_ZONES: ZoneAnchor[] = [
   { name: 'Castillo de Santa Bárbara', lat: 38.3490, lng: -0.4781 },
   { name: 'Rambla de Méndez Núñez', lat: 38.3466, lng: -0.4852 },
   { name: 'Av. Alfonso X El Sabio', lat: 38.3478, lng: -0.4882 },
-  { name: 'Plaza de los Luceros', lat: 38.3459, lng: -0.4906 },
+  { name: 'Plaza de los Luceros', lat: 38.346, lng: -0.49067 },
   { name: 'Av. de Maisonnave', lat: 38.3435, lng: -0.4910 },
   { name: 'Paseo de la Canalejas', lat: 38.3422, lng: -0.4865 },
 ];
