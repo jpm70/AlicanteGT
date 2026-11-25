@@ -3,21 +3,53 @@ import type { AtmosphereMode, CarPaintPreset, LandmarkPreset } from '../types/ga
 export const OPENFREEMAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 
 export const INITIAL_VIEW = {
-  lng: -0.4820,
-  lat: 38.3432,
+  lng: -0.48303,
+  lat: 38.34325,
   zoom: 19.6,
   pitch: 74,
-  bearing: 55,
+  bearing: 63,
 };
 
 export const ALICANTE_LANDMARKS: LandmarkPreset[] = [
   {
     id: 'explanada',
-    name: 'Paseo Mártires',
-    zone: 'Paseo Mártires de la Libertad · Explanada',
-    lat: 38.3432,
-    lng: -0.4820,
-    bearing: 55,
+    name: 'Explanada',
+    zone: 'Explanada de España · Mosaico ondulado',
+    lat: 38.34325,
+    lng: -0.48303,
+    bearing: 63,
+  },
+  {
+    id: 'castillo',
+    name: 'Castillo Sta. Bárbara',
+    zone: 'Monte Benacantil · Castillo de Santa Bárbara',
+    lat: 38.34945,
+    lng: -0.47819,
+    bearing: 228,
+  },
+  {
+    id: 'ayuntamiento',
+    name: 'Ayuntamiento',
+    zone: 'Plaza del Ayuntamiento · Casa Consistorial',
+    lat: 38.34517,
+    lng: -0.48105,
+    bearing: 313,
+  },
+  {
+    id: 'mercado',
+    name: 'Mercado Central',
+    zone: 'Av. Alfonso X El Sabio · Mercado Central',
+    lat: 38.34774,
+    lng: -0.48611,
+    bearing: 342,
+  },
+  {
+    id: 'santacruz',
+    name: 'Barrio Santa Cruz',
+    zone: 'Barrio de Santa Cruz · Casco Antiguo',
+    lat: 38.34753,
+    lng: -0.48327,
+    bearing: 110,
   },
   {
     id: 'puerto',
@@ -175,10 +207,12 @@ export interface ZoneAnchor {
 
 export const ALICANTE_ZONES: ZoneAnchor[] = [
   { name: 'Paseo Mártires de la Libertad · Puerto', lat: 38.3432, lng: -0.4820 },
-  { name: 'Explanada de España', lat: 38.3446, lng: -0.4815 },
+  { name: 'Explanada de España', lat: 38.34325, lng: -0.48303 },
   { name: 'Puerto Deportivo de Alicante', lat: 38.3408, lng: -0.4832 },
   { name: 'Playa del Postiguet', lat: 38.3462, lng: -0.4758 },
   { name: 'Casco Antiguo · Santa Cruz', lat: 38.3474, lng: -0.4824 },
+  { name: 'Plaza del Ayuntamiento', lat: 38.34495, lng: -0.48106 },
+  { name: 'Mercado Central', lat: 38.34774, lng: -0.48611 },
   { name: 'Castillo de Santa Bárbara', lat: 38.3490, lng: -0.4781 },
   { name: 'Rambla de Méndez Núñez', lat: 38.3466, lng: -0.4852 },
   { name: 'Av. Alfonso X El Sabio', lat: 38.3478, lng: -0.4882 },

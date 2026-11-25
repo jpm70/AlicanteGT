@@ -1,6 +1,6 @@
 {
   "name": "Alicante GT — Carreras 3D",
-  "description": "Juego de carreras 3D WebGL en las calles reales de Alicante con MapLibre GL, edificios 3D de OpenStreetMap y coche deportivo procedimental en Three.js.",
+  "description": "Juego de carreras 3D WebGL en las calles reales de Alicante: mundo 3D propio generado desde OpenStreetMap, relieve EU-DEM y ortofoto PNOA, con coche deportivo procedimental en Three.js.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

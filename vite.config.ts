@@ -6,6 +6,8 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // GitHub Pages sirve bajo /<repo>/: el workflow define VITE_PUBLIC_BASE_URL=/AlicanteGT/
+    base: process.env.VITE_PUBLIC_BASE_URL || '/',
     plugins: [
       react(),
       tailwindcss(),
@@ -32,9 +34,6 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
-    },
-    optimizeDeps: {
-      exclude: ['maplibre-gl'],
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
