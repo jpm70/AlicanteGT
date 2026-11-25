@@ -11,7 +11,7 @@ import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades
 
 const DEG = Math.PI / 180;
 /** Región cubierta por public/world/ortho.jpg (m locales); coincide con tools/fetch_ortho.py. */
-const ORTHO = { x0: -700, z0: -900, w: 1600, h: 1600 };
+const ORTHO = { x0: -1148, z0: -900, w: 2048, h: 1536 };
 /** Las luces de constants.ts están pensadas para el coche solo; en un mundo claro saturan. */
 const LK = 0.5;
 const damp = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));
@@ -114,6 +114,18 @@ export class WorldScene {
       new THREE.TextureLoader().loadAsync(`${base}world/ortho.jpg`).catch(() => null),
     ]);
     if (ortho) {
+      // GPU con límite de textura menor que 4096 px: se reduce la ortofoto para que no falle
+      const maxTex = this.renderer.capabilities.maxTextureSize;
+      const img = ortho.image as HTMLImageElement;
+      if (img.width > maxTex) {
+        const k = maxTex / img.width;
+        const cv = document.createElement('canvas');
+        cv.width = Math.floor(img.width * k);
+        cv.height = Math.floor(img.height * k);
+        cv.getContext('2d')!.drawImage(img, 0, 0, cv.width, cv.height);
+        ortho.image = cv as unknown as HTMLImageElement;
+        ortho.needsUpdate = true;
+      }
       ortho.colorSpace = THREE.SRGBColorSpace;
       ortho.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
       ortho.wrapS = ortho.wrapT = THREE.ClampToEdgeWrapping;

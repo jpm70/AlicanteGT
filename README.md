@@ -12,7 +12,7 @@ No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generad
 - **Edificios con su altura real**: plantas por volumen del **Catastro** (INSPIRE) sobre las huellas de OSM, con retranqueos, cuerpos bajos y patios interiores. El **año de construcción** y el uso eligen el estilo de fachada (ensanche, casco antiguo, bloque de los 60-70 o moderno), con planta baja distinta, balcones, persianas, toldos y **ventanas que se encienden de noche**.
 - **Relieve real** (EU-DEM 25 m): la subida al Benacantil, el barrio de Santa Cruz en ladera. Coche y cámara siguen la pendiente.
 - **Mar, costa, muelles, parques**, 738 árboles (62 palmeras *Phoenix canariensis*), farolas y semáforos de OSM.
-- **Hitos**: Castillo de Santa Bárbara (murallas con almenas, torres y torre del Homenaje), **mosaico ondulado de la Explanada**, Ayuntamiento con torres, Concatedral de San Nicolás, Basílica de Santa María, Mercado Central, Auditorio La Concha y el barrio de Santa Cruz en blanco y pastel.
+- **Hitos**: Castillo de Santa Bárbara (murallas con almenas, torres y torre del Homenaje), **mosaico ondulado de la Explanada**, Ayuntamiento con torres, Concatedral de San Nicolás, Basílica de Santa María, Mercado Central (cúpula con linterna, torres de esquina y portada), Auditorio La Concha, la **fuente con estatua de la Plaza de los Luceros**, la Fuente de la Aguadora y el barrio de Santa Cruz en blanco y pastel.
 - **Física y límites**: colisión con edificios, mar y troncos, y **límite de calzada** (el coche solo circula por calzada, aceras, plazas y la Explanada).
 
 ## Coche, cámaras y ambientes
@@ -21,7 +21,7 @@ No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generad
 - 3 cámaras: **Persecución**, **Modo Conductor** (cockpit interactivo) y **Aérea**.
 - 3 ambientes: **Atardecer Mediterráneo**, **Noche Neón** y **Día**.
 - Motor y derrape sintetizados con Web Audio (sin archivos de audio).
-- 5 puntos de salida: Explanada, Castillo, Ayuntamiento, Mercado Central y Barrio de Santa Cruz (más Puerto, Postiguet y Alfonso X).
+- 6 puntos de salida: Explanada, Castillo, Ayuntamiento, Mercado Central, Barrio de Santa Cruz y Plaza de Luceros (más Puerto, Postiguet y Alfonso X).
 
 ## Controles
 
