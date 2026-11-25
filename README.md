@@ -9,7 +9,7 @@ No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generad
 ## Qué hay en el mundo
 
 - **Calles, aceras y plazas reales** de OpenStreetMap, con ancho según el tipo de vía y la ortofoto aérea del **PNOA** (IGN, 0,5 m/px) sobre el suelo, la calzada y el mar: se ven carriles, pasos de cebra y el puerto con sus barcos.
-- **Edificios con su altura real** (plantas de OSM) y fachadas procedimentales en 4 estilos mediterráneos (ensanche, moderno, casco antiguo y bloque), con planta baja distinta, balcones, persianas, toldos y **ventanas que se encienden de noche**.
+- **Edificios con su altura real**: plantas por volumen del **Catastro** (INSPIRE) sobre las huellas de OSM, con retranqueos, cuerpos bajos y patios interiores. El **año de construcción** y el uso eligen el estilo de fachada (ensanche, casco antiguo, bloque de los 60-70 o moderno), con planta baja distinta, balcones, persianas, toldos y **ventanas que se encienden de noche**.
 - **Relieve real** (EU-DEM 25 m): la subida al Benacantil, el barrio de Santa Cruz en ladera. Coche y cámara siguen la pendiente.
 - **Mar, costa, muelles, parques**, 738 árboles (62 palmeras *Phoenix canariensis*), farolas y semáforos de OSM.
 - **Hitos**: Castillo de Santa Bárbara (murallas con almenas, torres y torre del Homenaje), **mosaico ondulado de la Explanada**, Ayuntamiento con torres, Concatedral de San Nicolás, Basílica de Santa María, Mercado Central, Auditorio La Concha y el barrio de Santa Cruz en blanco y pastel.
@@ -47,13 +47,14 @@ pip install requests numpy shapely trimesh mapbox_earcut pyproj pygltflib pillow
 
 python tools/fetch_osm.py     # OpenStreetMap (Overpass): calles, edificios, costa, parques, árboles, farolas
 python tools/fetch_dem.py     # elevaciones EU-DEM 25 m (opentopodata.org)
+python tools/fetch_catastro.py# plantas, año y uso (Catastro INSPIRE, zip de 22 MB del municipio 03900)
 python tools/fetch_ortho.py   # ortofoto PNOA (WMS del IGN) -> public/world/ortho.jpg
 python tools/build_world.py   # genera public/world/alicante.glb y colliders.json
 ```
 
 - Los datos descargados quedan en `tools/data/` (en `.gitignore`); `public/world/` sí está versionado.
 - `alicante.glb` contiene las capas `Ground`, `Park`, `Road`, `Sidewalk`, `Mosaic`, `Water`, `Walls`, `Roofs`, `Castle` y `Landmark`.
-- `colliders.json` lleva las huellas de edificios, obstáculos (árboles, mar, castillo), la máscara transitable (bits a 2 m), árboles, farolas y la malla de relieve.
+- `colliders.json` lleva las huellas de los volúmenes de edificio, obstáculos (árboles, mar, castillo), la máscara transitable (bits a 2 m), árboles, farolas y la malla de relieve.
 - Los servidores de Overpass y del WMS del IGN fallan a ratos: los scripts guardan caché por capa y reintentan.
 - Para otra zona, cambia el recuadro en `fetch_osm.py`, la región en `fetch_dem.py` / `fetch_ortho.py` y el origen en `build_world.py`.
 
@@ -95,6 +96,7 @@ SPA estática sin backend ni claves. El workflow `.github/workflows/deploy.yml` 
 ## Atribución y licencia
 
 - Ortofoto © [Instituto Geográfico Nacional de España](https://www.ign.es/) · PNOA, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es).
+- Edificios (plantas, año y uso): © [Dirección General del Catastro](https://www.catastro.hacienda.gob.es/), INSPIRE, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es).
 - Datos cartográficos © colaboradores de [OpenStreetMap](https://www.openstreetmap.org/copyright) (ODbL).
 - Relieve: EU-DEM (Copernicus) vía [OpenTopoData](https://www.opentopodata.org/).
 - Código bajo licencia **MIT**: consulta [`LICENSE`](./LICENSE).
