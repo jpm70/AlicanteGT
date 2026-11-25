@@ -7,6 +7,7 @@ import type { AtmosphereMode, CameraPreset, CarPaintPreset, CarState } from '../
 import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider, type DriveMask } from './collision';
 import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
+import { createPalmAssets, type PalmAssets } from './palms';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
@@ -34,7 +35,7 @@ interface LoadedTile { key: string; group: THREE.Group; textures: THREE.Texture[
 export class WorldScene {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
-  readonly camera = new THREE.PerspectiveCamera(62, 1, 0.3, 2500);
+  readonly camera = new THREE.PerspectiveCamera(62, 1, 0.3, 4000);
   readonly rig: SportsCarRig;
   collision: CollisionWorld | null = null;
 
@@ -55,6 +56,16 @@ export class WorldScene {
   private mosaicMat: THREE.MeshStandardMaterial | null = null;
   private plainMats: Record<string, THREE.MeshStandardMaterial> = {};
   private dummyTex: THREE.DataTexture | null = null;
+  private palmAssets: PalmAssets | null = null;
+  private sky: THREE.Mesh | null = null;
+  private skyU = {
+    uZenith: { value: new THREE.Color(0x3a7fd0) },
+    uMid: { value: new THREE.Color(0x86bdea) },
+    uHorizon: { value: new THREE.Color(0xd2e8f6) },
+  };
+  private clouds: { sprite: THREE.Sprite; ox: number; oz: number; alt: number; seed: number }[] = [];
+  private sunSprite: THREE.Sprite | null = null;
+  private skyTime = 0;
   private loader = new GLTFLoader();
   public loadedCount = 0;
   private groundPitch = 0;
@@ -108,6 +119,7 @@ export class WorldScene {
     this.scene.add(this.rig.root);
 
     this.scene.fog = this.fog;
+    this.buildSky();
     this.wallUniforms.uNight.value = mode === 'night' ? 1 : mode === 'sunset' ? 0.3 : 0;
     this.applySky();
 
@@ -171,7 +183,7 @@ export class WorldScene {
         orthoTex = ortho;
         lt.textures.push(ortho);
       }
-      const orthoMix: Record<string, number> = { Ground: 0.92, Road: 0.22, Sidewalk: 0.16, Park: 0.8, Water: 0.8 };
+      const orthoMix: Record<string, number> = { Ground: 0.92, Road: 0, Sidewalk: 0, Park: 0.8, Water: 0.8 };
       gltf.scene.traverse((o) => {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
@@ -385,66 +397,211 @@ export class WorldScene {
     [pp, ph, sp, sh, lr, la, lg].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
   }
 
-  /** Árboles y palmeras instanciados (posiciones reales de OSM). */
+  /** Árboles y palmeras instanciados (posiciones reales de OSM + arbolado de calle). */
   private addTrees(lt: LoadedTile, trees: [number, number, number][]) {
     const palms = trees.filter((t) => t[2] === 1);
     const broad = trees.filter((t) => t[2] === 0);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f35, roughness: 0.95 });
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.9 });
-    const frondMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, side: THREE.DoubleSide });
-    lt.materials.push(trunkMat, leafMat, frondMat);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
-    const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, n: number) => {
+    const one = new THREE.Vector3(1, 1, 1);
+    const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, n: number, shadow = false) => {
       const im = new THREE.InstancedMesh(geo, mat, Math.max(n, 1));
-      im.castShadow = true;
+      im.count = n;
+      im.castShadow = shadow;
       im.frustumCulled = false;
       lt.group.add(im);
       return im;
     };
     // árboles de hoja ancha: tronco + copa
-    const bt = mk(new THREE.CylinderGeometry(0.12, 0.2, 2.6, 6), trunkMat, broad.length);
-    const bc = mk(new THREE.IcosahedronGeometry(1.9, 1), leafMat, broad.length);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f35, roughness: 0.95 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.9 });
+    lt.materials.push(trunkMat, leafMat);
+    const bt = mk(new THREE.CylinderGeometry(0.12, 0.2, 2.6, 6), trunkMat, broad.length, true);
+    const bc = mk(new THREE.IcosahedronGeometry(1.9, 1), leafMat, broad.length, true);
     broad.forEach(([x, z], i) => {
       const sc = 0.8 + ((i * 37) % 10) / 25;
-      m.compose(new THREE.Vector3(x, heightAt(x, z) + 1.3, z), q, new THREE.Vector3(1, 1, 1)); bt.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, heightAt(x, z) + 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
-    });
-    // palmeras (la mayoría de los árboles de Alicante): tronco alto con anillos, bulbo y corona de 14 frondas curvas
-    const pt = mk(new THREE.CylinderGeometry(0.15, 0.27, 7, 8), trunkMat, palms.length);
-    const bulb = mk(new THREE.SphereGeometry(0.42, 8, 6), trunkMat, palms.length);
-    const fronds: THREE.BufferGeometry[] = [];
-    for (let k = 0; k < 14; k++) {
-      const g = new THREE.BoxGeometry(0.55, 0.035, 3.9, 1, 1, 6);
-      g.translate(0, 0, 1.95);
-      const pos = g.getAttribute('position');
-      const droop = 0.05 + (k % 3) * 0.012;
-      for (let i = 0; i < pos.count; i++) {   // frondas que se arquean hacia abajo
-        const z = pos.getZ(i);
-        pos.setY(i, pos.getY(i) + 0.55 * Math.sin(Math.min(z, 2.2) * 0.7) * 0.5 - droop * z * z);
-      }
-      g.rotateY((k / 14) * Math.PI * 2 + (k % 2) * 0.22);
-      fronds.push(g);
-    }
-    const pf = mk(mergeGeometries(fronds)!, frondMat, palms.length);
-    const greens = [0x4f8f3c, 0x5c9a45, 0x437a33, 0x68a04a].map((h) => new THREE.Color(h));
-    palms.forEach(([x, z], i) => {
-      const sc = 0.8 + ((i * 53) % 10) / 16;          // 0,8 .. 1,4 -> palmeras de 5,6 a 10 m
       const y = heightAt(x, z);
-      const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), (i * 2.399) % (Math.PI * 2));
-      m.compose(new THREE.Vector3(x, y + 3.5 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pt.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, y + 7.0 * sc, z), q, new THREE.Vector3(sc, sc, sc)); bulb.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, y + 7.2 * sc, z), rot, new THREE.Vector3(sc, sc, sc)); pf.setMatrixAt(i, m);
-      pf.setColorAt(i, greens[i % greens.length]);
+      m.compose(new THREE.Vector3(x, y + 1.3, z), q, one); bt.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, y + 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
     });
-    if (pf.instanceColor) pf.instanceColor.needsUpdate = true;
-    [bt, bc, pt, bulb, pf].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+    [bt, bc].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+
+    // palmeras: Phoenix canariensis (60 %) y Washingtonia (40 %), con altura, inclinación y color propios
+    const assets = (this.palmAssets ??= createPalmAssets());
+    const hash = (x: number, z: number) => { const v = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return v - Math.floor(v); };
+    const phoenix = palms.filter((p) => hash(p[0], p[1]) < 0.6);
+    const wash = palms.filter((p) => hash(p[0], p[1]) >= 0.6);
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    const tint = new THREE.Color();
+    const planting = (
+      list: [number, number, number][],
+      trunkIM: THREE.InstancedMesh, crownIM: THREE.InstancedMesh, bulbIM: THREE.InstancedMesh, skirtIM: THREE.InstancedMesh | null,
+      hMin: number, hMax: number, radius: number, crownScale: number
+    ) => {
+      list.forEach(([x, z], i) => {
+        const r1 = hash(x * 1.7, z * 2.3), r2 = hash(x * 3.1, z * 0.7), r3 = hash(x * 0.9, z * 4.1);
+        const H = hMin + (hMax - hMin) * r1;
+        const tilt = 0.02 + r2 * 0.06, az = r3 * Math.PI * 2;
+        dir.set(Math.sin(tilt) * Math.cos(az), Math.cos(tilt), Math.sin(tilt) * Math.sin(az));
+        const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+        const y = heightAt(x, z);
+        const base = new THREE.Vector3(x, y, z);
+        const topP = base.clone().addScaledVector(dir, H);
+        m.compose(base.clone().addScaledVector(dir, H / 2), quat, new THREE.Vector3(radius, H, radius)); trunkIM.setMatrixAt(i, m);
+        m.compose(topP.clone().addScaledVector(dir, -0.1), quat, new THREE.Vector3(radius * 1.35, radius * 1.1, radius * 1.35)); bulbIM.setMatrixAt(i, m);
+        const crownQ = new THREE.Quaternion().setFromAxisAngle(up, r2 * 6.28).premultiply(quat);
+        const cs = crownScale * (0.85 + r1 * 0.35);
+        m.compose(topP, crownQ, new THREE.Vector3(cs, cs, cs)); crownIM.setMatrixAt(i, m);
+        const g = 0.82 + r3 * 0.34;
+        tint.setRGB(g, g * (0.96 + r1 * 0.1), g * 0.9);
+        crownIM.setColorAt(i, tint);
+        if (skirtIM) { m.compose(topP.clone().addScaledVector(dir, -0.95), quat, one); skirtIM.setMatrixAt(i, m); }
+      });
+      [trunkIM, crownIM, bulbIM, skirtIM].forEach((im) => { if (im) im.instanceMatrix.needsUpdate = true; });
+      if (crownIM.instanceColor) crownIM.instanceColor.needsUpdate = true;
+    };
+    planting(
+      phoenix,
+      mk(assets.phoenix.trunk, assets.phoenix.trunkMat, phoenix.length, true),
+      mk(assets.phoenix.crown, assets.phoenix.crownMat, phoenix.length),
+      mk(assets.bulbGeo, assets.phoenix.trunkMat, phoenix.length),
+      null, 6.2, 9.8, 1, 1.0
+    );
+    planting(
+      wash,
+      mk(assets.wash.trunk, assets.wash.trunkMat, wash.length, true),
+      mk(assets.wash.crown, assets.wash.crownMat, wash.length),
+      mk(assets.bulbGeo, assets.wash.trunkMat, wash.length),
+      mk(assets.wash.skirt, assets.wash.skirtMat, wash.length),
+      9.0, 14.5, 1, 1.0
+    );
+  }
+
+  /** Cúpula de cielo con degradado, nubes en billboard y resplandor del sol. */
+  private buildSky() {
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(1800, 32, 16),
+      new THREE.ShaderMaterial({
+        uniforms: this.skyU,
+        side: THREE.BackSide,
+        depthWrite: false,
+        depthTest: false,
+        fog: false,
+        vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: `varying vec3 vDir; uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon;
+          void main(){ float h = clamp(vDir.y, 0.0, 1.0);
+            vec3 c = mix(uHorizon, uMid, smoothstep(0.0, 0.28, h)); c = mix(c, uZenith, smoothstep(0.22, 0.9, h));
+            gl_FragColor = vec4(c, 1.0);
+            #include <colorspace_fragment>
+          }`,
+      })
+    );
+    dome.frustumCulled = false;
+    dome.renderOrder = -1000;
+    this.scene.add(dome);
+    this.sky = dome;
+
+    // textura de nube: varias bolsas suaves y la base algo más gris
+    const cv = document.createElement('canvas');
+    cv.width = 256; cv.height = 128;
+    const c = cv.getContext('2d')!;
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 16; i++) {
+      const x = 44 + rnd() * 168, y = 66 + (rnd() - 0.5) * 24, r = 20 + rnd() * 30;
+      const g = c.createRadialGradient(x, y, 2, x, y, r);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.55, 'rgba(255,255,255,0.5)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      c.fillStyle = g; c.fillRect(0, 0, 256, 128);
+    }
+    c.globalCompositeOperation = 'source-atop';
+    const shade = c.createLinearGradient(0, 30, 0, 100);
+    shade.addColorStop(0, 'rgba(255,255,255,0)'); shade.addColorStop(1, 'rgba(120,132,160,0.55)');
+    c.fillStyle = shade; c.fillRect(0, 0, 256, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    for (let i = 0; i < 72; i++) {
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false, opacity: 0 });
+      const sprite = new THREE.Sprite(mat);
+      const size = 420 + rnd() * 420;
+      sprite.scale.set(size, size * 0.46, 1);
+      sprite.frustumCulled = false;
+      this.scene.add(sprite);
+      this.clouds.push({ sprite, ox: (rnd() - 0.5) * 3600, oz: (rnd() - 0.5) * 3600, alt: 260 + rnd() * 280, seed: rnd() });
+    }
+
+    // sol (o luna): resplandor aditivo
+    const sc = document.createElement('canvas');
+    sc.width = sc.height = 128;
+    const sx = sc.getContext('2d')!;
+    const sg = sx.createRadialGradient(64, 64, 2, 64, 64, 62);
+    sg.addColorStop(0, 'rgba(255,255,255,1)'); sg.addColorStop(0.2, 'rgba(255,240,210,0.85)'); sg.addColorStop(0.5, 'rgba(255,200,140,0.25)'); sg.addColorStop(1, 'rgba(255,180,120,0)');
+    sx.fillStyle = sg; sx.fillRect(0, 0, 128, 128);
+    const sun = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(sc), transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }));
+    sun.frustumCulled = false;
+    this.scene.add(sun);
+    this.sunSprite = sun;
+  }
+
+  private updateSky() {
+    const set = (z: number, m: number, h: number) => {
+      this.skyU.uZenith.value.setHex(z); this.skyU.uMid.value.setHex(m); this.skyU.uHorizon.value.setHex(h);
+    };
+    const tint = this.mode === 'night' ? 0x39446e : this.mode === 'sunset' ? 0xffc9a8 : 0xffffff;
+    if (this.mode === 'night') set(0x04060f, 0x0b1633, 0x16254f);
+    else if (this.mode === 'sunset') set(0x34457f, 0xd98d84, 0xf6b184);
+    else set(0x3a7fd0, 0x86bdea, 0xd2e8f6);
+    for (const c of this.clouds) (c.sprite.material as THREE.SpriteMaterial).color.setHex(tint);
+    if (this.sunSprite) {
+      const m = this.sunSprite.material as THREE.SpriteMaterial;
+      m.color.setHex(this.mode === 'night' ? 0xbfd0ff : this.mode === 'sunset' ? 0xff9a5a : 0xfff4d6);
+      m.opacity = this.mode === 'night' ? 0.55 : 1;
+      const sz = this.mode === 'sunset' ? 640 : this.mode === 'night' ? 150 : 300;
+      this.sunSprite.scale.set(sz, sz, 1);
+    }
+  }
+
+  /** Ruido de valor suave para decidir dónde hay nubes. */
+  private cloudNoise(x: number, z: number): number {
+    const h = (i: number, j: number) => { const v = Math.sin(i * 127.1 + j * 311.7) * 43758.5453; return v - Math.floor(v); };
+    const xi = Math.floor(x), zi = Math.floor(z), fx = x - xi, fz = z - zi;
+    const sx = fx * fx * (3 - 2 * fx), sz = fz * fz * (3 - 2 * fz);
+    const a = h(xi, zi), b = h(xi + 1, zi), c = h(xi, zi + 1), d = h(xi + 1, zi + 1);
+    return a + (b - a) * sx + (c - a) * sz + (a - b - c + d) * sx * sz;
+  }
+
+  private tickSky(px: number, pz: number, dt: number) {
+    if (!this.sky) return;
+    this.skyTime += dt;
+    const cam = this.camera.position;
+    this.sky.position.copy(cam);
+    const base = this.mode === 'night' ? 0.32 : this.mode === 'sunset' ? 0.92 : 0.95;
+    const R = 3600, wind = 5;
+    for (const c of this.clouds) {
+      const wx = ((((c.ox + wind * this.skyTime - px) % R) + R + R / 2) % R) - R / 2;
+      const wz = ((((c.oz + wind * 0.3 * this.skyTime - pz) % R) + R + R / 2) % R) - R / 2;
+      const x = px + wx, z = pz + wz;
+      c.sprite.position.set(x, c.alt, z);
+      // cobertura según la zona: hay barrios despejados y otros nubosos
+      const n = this.cloudNoise(x / 2600 + 3.1, z / 2600 + 7.7);
+      const cover = Math.min(Math.max((n - 0.4) / 0.25, 0), 1);
+      const edge = 1 - Math.pow(Math.abs(wx) / (R / 2), 6);   // se desvanecen al envolver por los bordes
+      (c.sprite.material as THREE.SpriteMaterial).opacity = base * cover * Math.max(edge, 0) * (0.6 + 0.4 * c.seed);
+    }
+    if (this.sunSprite) {
+      const kp = ATMOSPHERE_SPECS[this.mode].keyPosition;
+      const d = new THREE.Vector3(kp[0], Math.abs(kp[1]) + 8, kp[2]).normalize();
+      this.sunSprite.position.set(cam.x + d.x * 1700, cam.y + d.y * 1700, cam.z + d.z * 1700);
+    }
   }
 
   private applySky() {
     const s = SKY[this.mode];
     this.scene.environmentIntensity = this.mode === 'night' ? 0.1 : this.mode === 'sunset' ? 0.55 : 0.9;
-    this.scene.background = new THREE.Color(s.sky);
+    this.scene.background = null;
+    this.updateSky();
     this.fog.color.setHex(s.fog);
     this.fog.far = s.fogFar;
     this.fog.near = s.fogFar * 0.12;
@@ -550,6 +707,7 @@ export class WorldScene {
     this.key.target.position.set(p.x, gy, p.z);
     this.rim.position.set(p.x + 14, 9, p.z + 16);
 
+    this.tickSky(p.x, p.z, dt);
     this.renderer.render(this.scene, this.camera);
   }
 
