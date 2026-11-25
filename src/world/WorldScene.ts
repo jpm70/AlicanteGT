@@ -9,6 +9,8 @@ import { heightAt, setDem, toLocal, type DemData } from './geo';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
+/** Región cubierta por public/world/ortho.jpg (m locales); coincide con tools/fetch_ortho.py. */
+const ORTHO = { x0: -700, z0: -900, w: 1600, h: 1600 };
 /** Las luces de constants.ts están pensadas para el coche solo; en un mundo claro saturan. */
 const LK = 0.5;
 const damp = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));
@@ -41,6 +43,7 @@ export class WorldScene {
   private preset: CameraPreset = 'chase';
   private camBearing = 0;
   private camSnap = true;
+  private ortho: THREE.Texture | null = null;
   private groundPitch = 0;
   private groundRoll = 0;
   private camGround = 0;
@@ -104,10 +107,17 @@ export class WorldScene {
   async loadWorld(base: string, onProgress?: (t: string) => void): Promise<void> {
     onProgress?.('Descargando Alicante 3D…');
     const loader = new GLTFLoader();
-    const [gltf, col] = await Promise.all([
+    const [gltf, col, ortho] = await Promise.all([
       loader.loadAsync(`${base}world/alicante.glb`),
       fetch(`${base}world/colliders.json`).then((r) => r.json()),
+      new THREE.TextureLoader().loadAsync(`${base}world/ortho.jpg`).catch(() => null),
     ]);
+    if (ortho) {
+      ortho.colorSpace = THREE.SRGBColorSpace;
+      ortho.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+      ortho.wrapS = ortho.wrapT = THREE.ClampToEdgeWrapping;
+      this.ortho = ortho;
+    }
     this.world = gltf.scene;
     gltf.scene.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -125,7 +135,10 @@ export class WorldScene {
       }
       m.receiveShadow = true;
       m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle' || n === 'Landmark';
-      m.material = n === 'Walls'
+      const orthoMix: Record<string, number> = { Ground: 0.92, Road: 0.95, Sidewalk: 0.9, Park: 0.8, Water: 0.8 };
+      m.material = this.ortho && n in orthoMix
+        ? this.makeOrthoMaterial(n, orthoMix[n])
+        : n === 'Walls'
         ? this.makeWallMaterial()
         : n === 'Mosaic'
           ? new THREE.MeshStandardMaterial({ map: createMosaicTexture(), roughness: 0.6, metalness: 0.05 })
@@ -147,6 +160,34 @@ export class WorldScene {
     this.addTrees((col.trees ?? []) as [number, number, number][]);
     this.addLamps((col.lamps ?? []) as [number, number, number][]);
     onProgress?.(`Mundo listo · ${this.collision.count} edificios`);
+  }
+
+  /** Suelo/calzada/mar: color de vértice mezclado con la ortofoto del PNOA (mapeo plano en x,z). */
+  private makeOrthoMaterial(name: string, mix: number): THREE.MeshStandardMaterial {
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      flatShading: true,
+      roughness: name === 'Road' ? 0.92 : name === 'Water' ? 0.15 : 0.88,
+      metalness: name === 'Water' ? 0.2 : 0,
+    });
+    const tex = this.ortho!;
+    mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uOrtho = { value: tex };
+      sh.uniforms.uOB = { value: new THREE.Vector4(ORTHO.x0, ORTHO.z0, ORTHO.w, ORTHO.h) };
+      sh.uniforms.uOMix = { value: mix };
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 vOXZ;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 vOXZ;\nuniform sampler2D uOrtho;\nuniform vec4 uOB;\nuniform float uOMix;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          vec2 ouv = (vOXZ - uOB.xy) / uOB.zw;
+          if (ouv.x > 0.0 && ouv.x < 1.0 && ouv.y > 0.0 && ouv.y < 1.0) {
+            vec3 oc = texture2D(uOrtho, vec2(ouv.x, 1.0 - ouv.y)).rgb;
+            diffuseColor.rgb = mix(diffuseColor.rgb, oc, uOMix);
+          }`);
+    };
+    return mat;
   }
 
   /** Material de muros: atlas de fachadas (estilo en u/1000, plantas en v) + ventanas iluminadas de noche. */
