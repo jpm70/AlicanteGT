@@ -4,7 +4,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ATMOSPHERE_SPECS } from '../game/constants';
 import type { AtmosphereMode, CameraPreset, CarPaintPreset, CarState } from '../types/game';
 import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
-import { CollisionWorld, type BuildingCollider } from './collision';
+import { CollisionWorld, type BuildingCollider, type DriveMask } from './collision';
 import { heightAt, setDem, toLocal, type DemData } from './geo';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
@@ -143,6 +143,7 @@ export class WorldScene {
       ...(col.buildings as BuildingCollider[]),
       ...((col.obstacles ?? []) as BuildingCollider[]),
     ]);
+    this.collision.setDrive((col.drive ?? null) as DriveMask | null);
     this.addTrees((col.trees ?? []) as [number, number, number][]);
     this.addLamps((col.lamps ?? []) as [number, number, number][]);
     onProgress?.(`Mundo listo · ${this.collision.count} edificios`);

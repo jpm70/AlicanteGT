@@ -3,8 +3,8 @@ import type { AtmosphereMode, CarPaintPreset, LandmarkPreset } from '../types/ga
 export const OPENFREEMAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 
 export const INITIAL_VIEW = {
-  lng: -0.48323,
-  lat: 38.34317,
+  lng: -0.48303,
+  lat: 38.34325,
   zoom: 19.6,
   pitch: 74,
   bearing: 63,
@@ -15,8 +15,8 @@ export const ALICANTE_LANDMARKS: LandmarkPreset[] = [
     id: 'explanada',
     name: 'Explanada',
     zone: 'Explanada de España · Mosaico ondulado',
-    lat: 38.34317,
-    lng: -0.48323,
+    lat: 38.34325,
+    lng: -0.48303,
     bearing: 63,
   },
   {
@@ -183,7 +183,7 @@ export interface ZoneAnchor {
 
 export const ALICANTE_ZONES: ZoneAnchor[] = [
   { name: 'Paseo Mártires de la Libertad · Puerto', lat: 38.3432, lng: -0.4820 },
-  { name: 'Explanada de España', lat: 38.34317, lng: -0.48323 },
+  { name: 'Explanada de España', lat: 38.34325, lng: -0.48303 },
   { name: 'Puerto Deportivo de Alicante', lat: 38.3408, lng: -0.4832 },
   { name: 'Playa del Postiguet', lat: 38.3462, lng: -0.4758 },
   { name: 'Casco Antiguo · Santa Cruz', lat: 38.3474, lng: -0.4824 },

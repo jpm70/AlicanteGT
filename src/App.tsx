@@ -117,6 +117,7 @@ export default function App() {
     carStateRef.current = createInitialCarState(landmark.lat, landmark.lng, landmark.bearing);
 
     worldRef.current?.snapCamera();
+    worldRef.current?.collision?.reset();
   }, []);
 
   const handleReset = useCallback(() => {

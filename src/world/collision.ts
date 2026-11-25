@@ -15,9 +15,64 @@ const CELL = 40;
 const CAR_R = 1.0;
 const CIRCLE_OFFSETS = [-1.7, 0, 1.7]; // metros a lo largo del coche (trasero, centro, morro)
 
+export interface DriveMask { x0: number; z0: number; cell: number; nx: number; nz: number; bits: string }
+
+/** Esquinas del coche (m): delante/detrás x izquierda/derecha. */
+const CORNERS: [number, number][] = [[1.0, 2.3], [-1.0, 2.3], [1.0, -2.3], [-1.0, -2.3]];
+
 export class CollisionWorld {
+  private drive: Uint8Array | null = null;
+  private dm: DriveMask | null = null;
+  private lastX = 0;
+  private lastZ = 0;
+  private hasLast = false;
+
   private grid = new Map<string, Prepared[]>();
   public count = 0;
+
+  setDrive(d: DriveMask | null) {
+    this.dm = d;
+    if (!d) { this.drive = null; return; }
+    const bin = atob(d.bits);
+    this.drive = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) this.drive[i] = bin.charCodeAt(i);
+  }
+
+  /** ¿Se puede conducir en (x, z)? Fuera del mapa o sin máscara = sí. */
+  private canDrive(x: number, z: number): boolean {
+    const d = this.dm;
+    if (!d || !this.drive) return true;
+    const ix = Math.floor((x - d.x0) / d.cell), iz = Math.floor((z - d.z0) / d.cell);
+    if (ix < 0 || iz < 0 || ix >= d.nx || iz >= d.nz) return true;
+    const k = iz * d.nx + ix;
+    return ((this.drive[k >> 3] >> (7 - (k & 7))) & 1) === 1;
+  }
+
+  private carFits(x: number, z: number, hd: number): boolean {
+    const sn = Math.sin(hd), cs = Math.cos(hd);
+    const fx = sn, fz = -cs;        // adelante
+    const rx = cs, rz = sn;         // derecha
+    for (const [side, along] of CORNERS) {
+      if (!this.canDrive(x + fx * along + rx * side, z + fz * along + rz * side)) return false;
+    }
+    return true;
+  }
+
+  /** Mantiene el coche sobre calzada/acera: si la nueva posición sale, desliza por un eje o vuelve atrás. */
+  private keepOnRoad(state: CarState, x: number, z: number): { x: number; z: number; blocked: boolean } {
+    const hd = (state.headingDeg * Math.PI) / 180;
+    if (!this.hasLast || Math.hypot(x - this.lastX, z - this.lastZ) > 15) {
+      this.hasLast = true; this.lastX = x; this.lastZ = z;   // teletransporte / primer frame
+      return { x, z, blocked: false };
+    }
+    if (this.carFits(x, z, hd)) { this.lastX = x; this.lastZ = z; return { x, z, blocked: false }; }
+    if (!this.carFits(this.lastX, this.lastZ, hd)) { this.lastX = x; this.lastZ = z; return { x, z, blocked: false }; }  // ya estaba fuera: no atrapar
+    if (this.carFits(x, this.lastZ, hd)) { this.lastX = x; return { x, z: this.lastZ, blocked: true }; }
+    if (this.carFits(this.lastX, z, hd)) { this.lastZ = z; return { x: this.lastX, z, blocked: true }; }
+    return { x: this.lastX, z: this.lastZ, blocked: true };
+  }
+
+  reset() { this.hasLast = false; }
 
   constructor(buildings: BuildingCollider[]) {
     for (const b of buildings) {
@@ -91,6 +146,11 @@ export class CollisionWorld {
           impact = Math.max(impact, along);
         }
       }
+    }
+    const road = this.keepOnRoad(state, cx, cz);
+    if (road.blocked) {
+      impact = Math.max(impact, 0.6);
+      cx = road.x; cz = road.z;
     }
     if (cx !== l.x || cz !== l.z) {
       const ll = toLatLng(cx, cz);

@@ -298,6 +298,20 @@ land = EXT.difference(sea) if not sea.is_empty else EXT
 
 land = unary_union([land, piers.intersection(EXT)])
 
+
+# ---- superficie transitable (calzada + aceras + plazas + Explanada), rasterizada a 2 m y empaquetada en bits
+import base64, shapely
+drive_geom = unary_union([roads, walk, mosaic]).difference(sea_free).buffer(0.5)
+DC = 2.0
+dx0, dz0, dx1, dz1 = -1700, -1100, 900, 900
+dnx, dnz = int((dx1 - dx0) / DC), int((dz1 - dz0) / DC)
+gxs = dx0 + (np.arange(dnx) + 0.5) * DC; gzs = dz0 + (np.arange(dnz) + 0.5) * DC
+GX, GZ = np.meshgrid(gxs, gzs)
+shapely.prepare(drive_geom)
+okmask = shapely.contains_xy(drive_geom, GX.ravel(), GZ.ravel()).reshape(dnz, dnx)
+drive_b64 = base64.b64encode(np.packbits(okmask.ravel()).tobytes()).decode()
+print("transitable %.1f%% del area, bits KB %d" % (100 * okmask.mean(), len(drive_b64) // 1024))
+
 parts = []   # (nombre, V, F, C, UV|None)
 def add(name, geom, off, col, tint=False, uvfn=None):
     r = drape(geom, off, col, terrain_tint=tint, uvfn=uvfn)
@@ -426,6 +440,7 @@ if not sea_free.is_empty:
 
 json.dump({"origin":{"lat":LAT0,"lng":LNG0},"buildings":collid,"obstacles":tree_obst+sea_tiles+castle_obst,
            "roads":road_lines,"trees":trees,"lamps":lamps,
+           "drive":{"x0":dx0,"z0":dz0,"cell":DC,"nx":dnx,"nz":dnz,"bits":drive_b64},
            "dem":{"x0":DX0,"z0":DZ0,"step":DST,"nx":len(DXS),"nz":len(DZS),"h":[round(float(v),1) for v in HG.reshape(-1)]}}, open("public/world/colliders.json","w"))
 
 print("mar m2", int(sea_free.area), "tiles", len(sea_tiles), "arboles", len(trees), "parques m2", int(parks.area), "farolas", len(lamps), "|", "edificios", len(collid), "calles", len(road_lines), "glb KB", os.path.getsize("public/world/alicante.glb")//1024)
