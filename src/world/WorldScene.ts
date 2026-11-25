@@ -124,7 +124,7 @@ export class WorldScene {
         ca.needsUpdate = true;
       }
       m.receiveShadow = true;
-      m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle';
+      m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle' || n === 'Landmark';
       m.material = n === 'Walls'
         ? this.makeWallMaterial()
         : n === 'Mosaic'
@@ -310,6 +310,7 @@ export class WorldScene {
       heightAt(p.x - Math.cos(hd) * 0.9, p.z - Math.sin(hd) * 0.9);
     this.groundPitch += (Math.atan2(ahead - behind, 3.8) - this.groundPitch) * (1 - Math.exp(-10 * dt));
     this.groundRoll += (Math.atan2(side, 1.8) - this.groundRoll) * (1 - Math.exp(-10 * dt));
+    if (this.camSnap) this.camGround = gy;
     this.camGround += (gy - this.camGround) * (1 - Math.exp(-6 * dt));
     this.rig.root.rotation.order = 'YXZ';
     this.rig.root.position.set(p.x, gy + 0.05, p.z);

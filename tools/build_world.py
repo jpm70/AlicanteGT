@@ -136,6 +136,59 @@ mosaic = unary_union(mosaic_geoms).difference(roads) if mosaic_geoms else Polygo
 walk = unary_union([walk, sidew] + plaza_geoms).difference(mosaic)
 
 
+
+# ---- hitos: primitivas y tabla por id de OSM
+def _vc(V, col):
+    return np.tile(col, (len(V), 1))
+
+def box_at(cx, cz, ybase, ytop, sx, sz, ang, col):
+    b = trimesh.creation.box(extents=[sx, ytop - ybase, sz])
+    R = trimesh.transformations.rotation_matrix(ang, [0, 1, 0]); b.apply_transform(R)
+    b.apply_translation([cx, (ybase + ytop) / 2, cz])
+    V = np.asarray(b.vertices); return V, np.asarray(b.faces), _vc(V, col)
+
+def dome_at(cx, cz, y, r, hr, col):
+    m = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    keep = m.vertices[m.faces].mean(axis=1)[:, 1] > -0.05          # solo la mitad superior (cúpula)
+    F = m.faces[keep]; used = np.unique(F); remap = -np.ones(len(m.vertices), dtype=int); remap[used] = np.arange(len(used))
+    V = np.asarray(m.vertices)[used] * np.array([r, hr, r]) + np.array([cx, y, cz])
+    return V, remap[F], _vc(V, col)
+
+def pyramid_at(cx, cz, y, half, h, col, ang=0.0):
+    m = trimesh.creation.cone(radius=half * 1.4142, height=h, sections=4)
+    m.apply_transform(trimesh.transformations.rotation_matrix(-math.pi / 2, [1, 0, 0]))
+    m.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 4 + ang, [0, 1, 0]))
+    m.apply_translation([cx, y, cz])
+    V = np.asarray(m.vertices); return V, np.asarray(m.faces), _vc(V, col)
+
+def tower_at(cx, cz, ybase, ytop, size, ang, wallc, capc, caph):
+    return [box_at(cx, cz, ybase, ytop, size, size, ang, wallc),
+            box_at(cx, cz, ytop, ytop + 0.9, size + 1.0, size + 1.0, ang, wallc),
+            pyramid_at(cx, cz, ytop + 0.9, (size + 0.6) / 2, caph, capc, ang)]
+
+def nearest_vertices(poly, pt, k=2):
+    pts = list(poly.exterior.coords)[:-1]
+    pts.sort(key=lambda q: math.hypot(q[0] - pt[0], q[1] - pt[1])); return pts[:k]
+
+def toward_centroid(poly, q, d):
+    c = poly.centroid; vx, vz = c.x - q[0], c.y - q[1]; l = math.hypot(vx, vz) or 1
+    return q[0] + vx / l * d, q[1] + vz / l * d
+
+def edge_angle_to(poly, pt):
+    pts = list(poly.exterior.coords); best = None
+    for a, b in zip(pts[:-1], pts[1:]):
+        mx, mz = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2; d = math.hypot(mx - pt[0], mz - pt[1])
+        if best is None or d < best[0]: best = (d, -math.atan2(b[1] - a[1], b[0] - a[0]))
+    return best[1]
+
+PLAZA = (82.0, -195.0)            # Plaza del Ayuntamiento
+SANTA_CRUZ = (-110.0, -470.0, 135.0)   # barrio de Santa Cruz (cx, cz, radio)
+LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_SOL = 265207919, 83998999, 22560738, 21410214, 515871894, 53271502
+LM_COL = {LM_AYTO: 0xe3b48f, LM_CONCA: 0xe6dcc3, LM_SMARIA: 0xe0b685, LM_MERCAT: 0xf1dea0, LM_AUDIT: 0xf4f1ea,
+          22561001: 0xe0b685, 156992115: 0xe7b8a8, 33197578: 0xf2ecde, 22588102: 0xf3f3f1}
+SC_COLS = [0xfaf8f2, 0xfaf8f2, 0xf3efe4, 0xf7efd9, 0xdbe8f2, 0xf2dcc6, 0xfaf8f2, 0xe9d2a4]
+lm_parts = []
+
 # ---- edificios: muros con UV de fachada (u = tramos de 3,2 m + 1000*estilo, v = plantas de 3,1 m) y tejados aparte
 
 BAY, FLOOR = 3.2, 3.1
@@ -177,6 +230,12 @@ for e in ways(load("building")):
     seed = int(hashlib.md5(str(e["id"]).encode()).hexdigest()[:6], 16)
     st = style_for(levels, seed); styles_count[st] += 1; levels_f = h/FLOOR
     col = hexrgb(WALL_COLS[seed % len(WALL_COLS)]); rcol = hexrgb(ROOF_COLS[(seed >> 4) % len(ROOF_COLS)])
+    _c = poly.centroid
+    if e["id"] in LM_COL: col = hexrgb(LM_COL[e["id"]])
+    elif math.hypot(_c.x - SANTA_CRUZ[0], _c.y - SANTA_CRUZ[1]) < SANTA_CRUZ[2]:
+        col = hexrgb(SC_COLS[seed % len(SC_COLS)]); st = 2
+    if e["id"] == LM_SOL: st = 1
+
     ring = list(poly.exterior.coords)
     rh = hf([c[0] for c in ring], [c[1] for c in ring]); ytop = float(rh.max()) + h
     s_acc = 0.0
@@ -198,6 +257,25 @@ for e in ways(load("building")):
     if rm is not None:
         base = sum(len(x) for x in rv)
         rv.append(np.asarray(rm.vertices)); rf.append(np.asarray(rm.faces)+base); rc.append(np.asarray(rm.visual.vertex_colors))
+    if e["id"] in (LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT):
+        stone = hexrgb(LM_COL[e["id"]]); cc = poly.centroid; ang = edge_angle_to(poly, PLAZA)
+        if e["id"] == LM_AYTO:
+            for q in nearest_vertices(poly, PLAZA, 2):
+                tx, tz = toward_centroid(poly, q, 3.6)
+                lm_parts += tower_at(tx, tz, float(rh.min()) - 0.5, ytop + 13.0, 6.6, ang, stone, hexrgb(0x2f6f9f), 9.0)
+        elif e["id"] == LM_CONCA:
+            lm_parts.append(dome_at(cc.x, cc.y, ytop - 1.0, 11.0, 10.5, hexrgb(0x3a78b8)))
+            q = nearest_vertices(poly, PLAZA, 1)[0]; tx, tz = toward_centroid(poly, q, 4.5)
+            lm_parts += tower_at(tx, tz, float(rh.min()) - 0.5, ytop + 14.0, 7.5, ang, stone, hexrgb(0xb2593a), 8.0)
+        elif e["id"] == LM_SMARIA:
+            lm_parts.append(dome_at(cc.x, cc.y, ytop - 1.0, 7.5, 7.0, hexrgb(0xb2593a)))
+            for q in nearest_vertices(poly, (150.0, -300.0), 2):
+                tx, tz = toward_centroid(poly, q, 3.8)
+                lm_parts += tower_at(tx, tz, float(rh.min()) - 0.5, ytop + 10.0, 6.0, ang, stone, hexrgb(0xb2593a), 6.5)
+        elif e["id"] == LM_MERCAT:
+            lm_parts.append(dome_at(cc.x, cc.y, ytop - 0.5, 9.0, 5.5, hexrgb(0x7e9a8e)))
+        elif e["id"] == LM_AUDIT:
+            lm_parts.append(dome_at(cc.x, cc.y, ytop - 0.5, 7.0, 6.0, hexrgb(0xf4f1ea)))
     collid.append({"id":e["id"],"h":round(h,1),"p":[[round(x,2),round(z,2)] for x,z in poly.exterior.coords]})
 
 print("estilos de fachada", styles_count)
@@ -393,11 +471,19 @@ except Exception as ex:
 parts.append(("Walls", np.array(wv), np.array(wf), np.array(wc), np.array(wu)))
 
 parts.append(("Roofs", np.vstack(rv), np.vstack(rf), np.vstack(rc), None))
+castle_parts_all = castle_parts
+lm_all = lm_parts
+if False: pass
 if castle_parts:
     _o = 0; _V, _F, _C = [], [], []
     for cv_, cf_, cc_ in castle_parts:
         _V.append(cv_); _F.append(cf_ + _o); _C.append(np.column_stack([cc_[:, :3], np.full(len(cc_), 255)])); _o += len(cv_)
     parts.append(("Castle", np.vstack(_V), np.vstack(_F), np.vstack(_C), None))
+if lm_all:
+    _o = 0; _V, _F, _C = [], [], []
+    for cv_, cf_, cc_ in lm_all:
+        _V.append(cv_); _F.append(cf_ + _o); _C.append(np.column_stack([cc_[:, :3], np.full(len(cc_), 255)])); _o += len(cv_)
+    parts.append(("Landmark", np.vstack(_V), np.vstack(_F), np.vstack(_C), None))
 
 
 def write_glb(path, parts):
