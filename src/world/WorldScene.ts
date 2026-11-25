@@ -54,6 +54,7 @@ export class WorldScene {
   private wallMat: THREE.MeshStandardMaterial | null = null;
   private mosaicMat: THREE.MeshStandardMaterial | null = null;
   private plainMats: Record<string, THREE.MeshStandardMaterial> = {};
+  private dummyTex: THREE.DataTexture | null = null;
   private loader = new GLTFLoader();
   public loadedCount = 0;
   private groundPitch = 0;
@@ -170,7 +171,7 @@ export class WorldScene {
         orthoTex = ortho;
         lt.textures.push(ortho);
       }
-      const orthoMix: Record<string, number> = { Ground: 0.92, Road: 0.95, Sidewalk: 0.9, Park: 0.8, Water: 0.8 };
+      const orthoMix: Record<string, number> = { Ground: 0.92, Road: 0.22, Sidewalk: 0.16, Park: 0.8, Water: 0.8 };
       gltf.scene.traverse((o) => {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
@@ -186,8 +187,8 @@ export class WorldScene {
         }
         m.receiveShadow = n !== 'Water';
         m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle' || n === 'Landmark';
-        if (orthoTex && n in orthoMix) {
-          const mat = this.makeOrthoMaterial(n, orthoMix[n], orthoTex, info);
+        if ((orthoTex && n in orthoMix) || n === 'Road' || n === 'Sidewalk') {
+          const mat = this.makeOrthoMaterial(n, orthoMix[n] ?? 0, orthoTex, info);
           lt.materials.push(mat);
           m.material = mat;
         } else if (n === 'Walls') {
@@ -200,12 +201,15 @@ export class WorldScene {
             flatShading: true,
             roughness: n === 'Road' ? 0.92 : n === 'Water' ? 0.12 : 0.85,
             metalness: n === 'Water' ? 0.25 : 0,
+            polygonOffset: n === 'Marks',
+            polygonOffsetFactor: n === 'Marks' ? -4 : 0,
+            polygonOffsetUnits: n === 'Marks' ? -4 : 0,
           });
         }
       });
       lt.group.add(gltf.scene);
       this.addTrees(lt, (col.trees ?? []) as [number, number, number][]);
-      this.addLamps(lt, (col.lamps ?? []) as [number, number, number][]);
+      this.addLamps(lt, (col.lamps ?? []) as [number, number, number, number?][]);
       this.scene.add(lt.group);
       this.tiles.set(key, lt);
       this.collision?.addTile(
@@ -255,28 +259,44 @@ export class WorldScene {
   }
 
   /** Suelo/calzada/mar: color de vértice mezclado con la ortofoto del PNOA (mapeo plano en x,z). */
-  private makeOrthoMaterial(name: string, mix: number, tex: THREE.Texture, info: TileInfo): THREE.MeshStandardMaterial {
+  private makeOrthoMaterial(name: string, mix: number, tex: THREE.Texture | null, info: TileInfo): THREE.MeshStandardMaterial {
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       flatShading: true,
-      roughness: name === 'Road' ? 0.92 : name === 'Water' ? 0.15 : 0.88,
+      roughness: name === 'Road' ? 0.95 : name === 'Water' ? 0.15 : name === 'Sidewalk' ? 0.9 : 0.88,
       metalness: name === 'Water' ? 0.2 : 0,
+      polygonOffset: name === 'Road' || name === 'Sidewalk',
+      polygonOffsetFactor: name === 'Road' ? -1 : name === 'Sidewalk' ? -2 : 0,
+      polygonOffsetUnits: name === 'Road' ? -1 : name === 'Sidewalk' ? -2 : 0,
     });
+    const kind = name === 'Road' ? 1 : name === 'Sidewalk' ? 2 : 0;
+    const dummy = this.dummyTex ??= new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1);
+    dummy.needsUpdate = true;
     mat.onBeforeCompile = (sh) => {
-      sh.uniforms.uOrtho = { value: tex };
+      sh.uniforms.uOrtho = { value: tex ?? dummy };
       sh.uniforms.uOB = { value: new THREE.Vector4(info.tx * TILE, info.tz * TILE, TILE, TILE) };
-      sh.uniforms.uOMix = { value: mix };
+      sh.uniforms.uOMix = { value: tex ? mix : 0 };
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vOXZ;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec2 vOXZ;\nuniform sampler2D uOrtho;\nuniform vec4 uOB;\nuniform float uOMix;')
+        .replace('#include <common>', `#include <common>
+          varying vec2 vOXZ;
+          uniform sampler2D uOrtho;
+          uniform vec4 uOB;
+          uniform float uOMix;
+          float hs(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
         .replace('#include <color_fragment>', `#include <color_fragment>
           vec2 ouv = (vOXZ - uOB.xy) / uOB.zw;
-          if (ouv.x > 0.0 && ouv.x < 1.0 && ouv.y > 0.0 && ouv.y < 1.0) {
+          if (uOMix > 0.0 && ouv.x > 0.0 && ouv.x < 1.0 && ouv.y > 0.0 && ouv.y < 1.0) {
             vec3 oc = texture2D(uOrtho, vec2(ouv.x, 1.0 - ouv.y)).rgb;
             diffuseColor.rgb = mix(diffuseColor.rgb, oc, uOMix);
-          }`);
+          }
+          ${kind === 1 ? `float g1 = hs(floor(vOXZ * 6.0)); float g2 = hs(floor(vOXZ * 0.8));
+          diffuseColor.rgb *= 0.9 + 0.13 * g1 + 0.07 * g2;` : ''}
+          ${kind === 2 ? `vec2 q = vOXZ / 0.6; vec2 f = fract(q); vec2 id = floor(q);
+          float joint = min(step(f.x, 0.05) + step(f.y, 0.05), 1.0);
+          diffuseColor.rgb *= (0.97 + hs(id) * 0.07) * (1.0 - 0.2 * joint);` : ''}`);
     };
     return mat;
   }
@@ -314,16 +334,20 @@ export class WorldScene {
     return mat;
   }
 
-  /** Farolas y semáforos instanciados. */
-  private addLamps(lt: LoadedTile, lamps: [number, number, number][]) {
+  /** Farolas y semáforos instanciados (los semáforos van en las aceras, orientados a lo largo de la vía). */
+  private addLamps(lt: LoadedTile, lamps: [number, number, number, number?][]) {
     const poles = lamps.filter((l) => l[2] === 0);
     const sigs = lamps.filter((l) => l[2] === 1);
     const metal = new THREE.MeshStandardMaterial({ color: 0x2c2f34, roughness: 0.6, metalness: 0.5 });
     const glow = new THREE.MeshStandardMaterial({ color: 0xffe2a8, emissive: 0xffd48a, emissiveIntensity: 0.6, roughness: 0.4 });
-    lt.materials.push(metal, glow);
+    const red = new THREE.MeshStandardMaterial({ color: 0xff3b30, emissive: 0xff2a20, emissiveIntensity: 1.4, roughness: 0.4 });
+    const amb = new THREE.MeshStandardMaterial({ color: 0xffb020, emissive: 0xff9a10, emissiveIntensity: 0.25, roughness: 0.4 });
+    const grn = new THREE.MeshStandardMaterial({ color: 0x35d06a, emissive: 0x1fb050, emissiveIntensity: 0.25, roughness: 0.4 });
+    lt.materials.push(metal, glow, red, amb, grn);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const one = new THREE.Vector3(1, 1, 1);
+    const up = new THREE.Vector3(0, 1, 0);
     const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, n: number) => {
       const im = new THREE.InstancedMesh(geo, mat, Math.max(n, 1));
       im.frustumCulled = false;
@@ -337,14 +361,28 @@ export class WorldScene {
       m.compose(new THREE.Vector3(x, y + 3, z), q, one); pp.setMatrixAt(i, m);
       m.compose(new THREE.Vector3(x, y + 6.1, z), q, one); ph.setMatrixAt(i, m);
     });
-    const sp = mk(new THREE.CylinderGeometry(0.07, 0.09, 4, 6), metal, sigs.length);
-    const sh = mk(new THREE.BoxGeometry(0.35, 1.0, 0.3), metal, sigs.length);
-    sigs.forEach(([x, z], i) => {
+    // semáforo: mástil, cabezal con tres luces por las dos caras
+    const sp = mk(new THREE.CylinderGeometry(0.07, 0.09, 4.2, 6), metal, sigs.length);
+    const sh = mk(new THREE.BoxGeometry(0.3, 0.95, 0.26), metal, sigs.length);
+    const lensGeo = new THREE.SphereGeometry(0.09, 8, 6);
+    const lr = mk(lensGeo, red, sigs.length * 2);
+    const la = mk(lensGeo, amb, sigs.length * 2);
+    const lg = mk(lensGeo, grn, sigs.length * 2);
+    const off = new THREE.Vector3();
+    sigs.forEach(([x, z, , yaw = 0], i) => {
       const y = heightAt(x, z);
-      m.compose(new THREE.Vector3(x, y + 2, z), q, one); sp.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, y + 4.2, z), q, one); sh.setMatrixAt(i, m);
+      const rot = new THREE.Quaternion().setFromAxisAngle(up, yaw);
+      m.compose(new THREE.Vector3(x, y + 2.1, z), q, one); sp.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, y + 4.3, z), rot, one); sh.setMatrixAt(i, m);
+      [lr, la, lg].forEach((im, k) => {
+        for (let f = 0; f < 2; f++) {
+          off.set(0, 0.28 - k * 0.28, (f === 0 ? 1 : -1) * 0.14).applyQuaternion(rot);
+          m.compose(new THREE.Vector3(x + off.x, y + 4.3 + off.y, z + off.z), q, one);
+          im.setMatrixAt(i * 2 + f, m);
+        }
+      });
     });
-    [pp, ph, sp, sh].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+    [pp, ph, sp, sh, lr, la, lg].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
   }
 
   /** Árboles y palmeras instanciados (posiciones reales de OSM). */
@@ -353,7 +391,7 @@ export class WorldScene {
     const broad = trees.filter((t) => t[2] === 0);
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f35, roughness: 0.95 });
     const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.9 });
-    const frondMat = new THREE.MeshStandardMaterial({ color: 0x4f8f3c, roughness: 0.85, side: THREE.DoubleSide });
+    const frondMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, side: THREE.DoubleSide });
     lt.materials.push(trunkMat, leafMat, frondMat);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
@@ -372,27 +410,35 @@ export class WorldScene {
       m.compose(new THREE.Vector3(x, heightAt(x, z) + 1.3, z), q, new THREE.Vector3(1, 1, 1)); bt.setMatrixAt(i, m);
       m.compose(new THREE.Vector3(x, heightAt(x, z) + 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
     });
-    // palmeras: tronco alto y fina corona de frondas
-    const pt = mk(new THREE.CylinderGeometry(0.16, 0.26, 7, 6), trunkMat, palms.length);
+    // palmeras (la mayoría de los árboles de Alicante): tronco alto con anillos, bulbo y corona de 14 frondas curvas
+    const pt = mk(new THREE.CylinderGeometry(0.15, 0.27, 7, 8), trunkMat, palms.length);
+    const bulb = mk(new THREE.SphereGeometry(0.42, 8, 6), trunkMat, palms.length);
     const fronds: THREE.BufferGeometry[] = [];
-    for (let k = 0; k < 9; k++) {
-      const g = new THREE.BoxGeometry(0.42, 0.05, 3.4, 1, 1, 4);
-      g.translate(0, 0, 1.7);
+    for (let k = 0; k < 14; k++) {
+      const g = new THREE.BoxGeometry(0.55, 0.035, 3.9, 1, 1, 6);
+      g.translate(0, 0, 1.95);
       const pos = g.getAttribute('position');
-      for (let i = 0; i < pos.count; i++) {   // frondas que se curvan hacia abajo
+      const droop = 0.05 + (k % 3) * 0.012;
+      for (let i = 0; i < pos.count; i++) {   // frondas que se arquean hacia abajo
         const z = pos.getZ(i);
-        pos.setY(i, pos.getY(i) - 0.045 * z * z);
+        pos.setY(i, pos.getY(i) + 0.55 * Math.sin(Math.min(z, 2.2) * 0.7) * 0.5 - droop * z * z);
       }
-      g.rotateY((k / 9) * Math.PI * 2 + (k % 2) * 0.25);
+      g.rotateY((k / 14) * Math.PI * 2 + (k % 2) * 0.22);
       fronds.push(g);
     }
     const pf = mk(mergeGeometries(fronds)!, frondMat, palms.length);
+    const greens = [0x4f8f3c, 0x5c9a45, 0x437a33, 0x68a04a].map((h) => new THREE.Color(h));
     palms.forEach(([x, z], i) => {
-      const sc = 0.85 + ((i * 53) % 10) / 30;
-      m.compose(new THREE.Vector3(x, heightAt(x, z) + 3.5 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pt.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, heightAt(x, z) + 7.2 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pf.setMatrixAt(i, m);
+      const sc = 0.8 + ((i * 53) % 10) / 16;          // 0,8 .. 1,4 -> palmeras de 5,6 a 10 m
+      const y = heightAt(x, z);
+      const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), (i * 2.399) % (Math.PI * 2));
+      m.compose(new THREE.Vector3(x, y + 3.5 * sc, z), q, new THREE.Vector3(sc, sc, sc)); pt.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, y + 7.0 * sc, z), q, new THREE.Vector3(sc, sc, sc)); bulb.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, y + 7.2 * sc, z), rot, new THREE.Vector3(sc, sc, sc)); pf.setMatrixAt(i, m);
+      pf.setColorAt(i, greens[i % greens.length]);
     });
-    [bt, bc, pt, pf].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+    if (pf.instanceColor) pf.instanceColor.needsUpdate = true;
+    [bt, bc, pt, bulb, pf].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
   }
 
   private applySky() {

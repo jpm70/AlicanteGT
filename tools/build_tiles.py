@@ -250,6 +250,171 @@ def build_sea():
     return sea.intersection(box(X0 - 300, Z0 - 300, X1 + 300, Z1 + 300))
 
 
+
+NON_PALM = ("ficus", "ulmus", "platanus", "pinus", "grevillea", "jacaranda", "olea", "citrus", "cupressus", "tipuana", "quercus", "morus", "celtis", "melia", "brachychiton", "washingtonia_x")
+
+
+def furniture_positions(x, z, is_signal, road_lines):
+    """En OSM los semáforos y algunas farolas están sobre el eje de la calzada: se llevan a la acera.
+    Semáforo: uno a cada lado de la vía. Farola: un solo lado. Devuelve [(x, z, yaw)]; yaw alinea el eje z local con la vía."""
+    best = None
+    for r in road_lines:
+        pts = r["p"]
+        for i in range(len(pts) - 1):
+            ax, az = pts[i]; bx, bz = pts[i + 1]; dx, dz = bx - ax, bz - az; l2 = dx * dx + dz * dz
+            if l2 < 0.01: continue
+            t = max(0.0, min(1.0, ((x - ax) * dx + (z - az) * dz) / l2)); px, pz = ax + t * dx, az + t * dz; d = math.hypot(x - px, z - pz)
+            if d < 22 and (best is None or d < best[0]): best = (d, px, pz, dx / math.sqrt(l2), dz / math.sqrt(l2), r["w"])
+    if best is None: return [(x, z, 0.0)]
+    d, px, pz, fx, fz, w = best
+    yaw = math.atan2(fx, fz)
+    if d > w / 2 + 0.4: return [(x, z, yaw)]          # ya está fuera de la calzada
+    nx, nz = -fz, fx; off = w / 2 + 0.9
+    out = [(px + nx * off * sd, pz + nz * off * sd, yaw) for sd in (1, -1)]
+    return out if is_signal else out[:1]
+
+
+def tree_kind(tags, x, z):
+    """1 = palmera, 0 = árbol de hoja ancha. En Alicante la mayoría son palmeras (Phoenix, Washingtonia)."""
+    sp = (tags.get("species", "") + tags.get("genus", "") + tags.get("species:en", "")).lower()
+    if tags.get("leaf_type") == "palm_leaved" or "phoenix" in sp or "washingtonia" in sp or "palm" in sp or "chamaerops" in sp: return 1
+    if any(n in sp for n in NON_PALM): return 0
+    h = int(hashlib.md5(f"{round(x)}_{round(z)}".encode()).hexdigest()[:4], 16) % 100
+    return 1 if h < 62 else 0
+
+
+def street_trees(road_lines, walk_t, existing, bshapes, bidx, x0, z0, x1, z1):
+    """Arbolado de calle cada ~15 m a ambos lados de las vías principales, solo sobre acera y lejos de edificios."""
+    out = []; taken = [(a, b) for a, b, _ in existing]
+    shapely.prepare(walk_t)
+    cell = {}
+    for a, b in taken: cell.setdefault((int(a // 8), int(b // 8)), []).append((a, b))
+    def free(x, z):
+        for i in range(int(x // 8) - 1, int(x // 8) + 2):
+            for j in range(int(z // 8) - 1, int(z // 8) + 2):
+                for a, b in cell.get((i, j), []):
+                    if (a - x) ** 2 + (b - z) ** 2 < 49: return False
+        return True
+    for r in road_lines:
+        if r["k"] not in ("primary", "secondary", "tertiary", "residential"): continue
+        pts = r["p"]; side_off = r["w"] / 2 + 0.95
+        dist = 0.0; nxt = 6.0; side = 1
+        for i in range(len(pts) - 1):
+            ax, az = pts[i]; bx, bz = pts[i + 1]; L = math.hypot(bx - ax, bz - az)
+            if L < 0.01: continue
+            fx, fz = (bx - ax) / L, (bz - az) / L
+            while nxt <= dist + L:
+                t = nxt - dist; cx, cz = ax + fx * t, az + fz * t
+                for sd in (1, -1):
+                    px, pz = cx + (-fz) * side_off * sd, cz + fx * side_off * sd
+                    if not (x0 <= px < x1 and z0 <= pz < z1): continue
+                    if r["k"] == "residential" and (int(abs(cx * 7 + cz * 13)) % 3): continue
+                    if not free(px, pz): continue
+                    pt = Point(px, pz)
+                    if not walk_t.contains(pt): continue
+                    if any(bshapes[k].distance(pt) < 2.2 for k in bidx.query(pt.buffer(2.2))): continue
+                    out.append([round(px, 2), round(pz, 2), tree_kind({}, px, pz)]); cell.setdefault((int(px // 8), int(pz // 8)), []).append((px, pz))
+                nxt += 15.0 + (int(abs(cx)) % 5)
+            dist += L
+    return out
+
+
+def road_marks(road_lines, signals, x0, z0, x1, z1):
+    """Líneas de carril (discontinuas), bordes continuos y pasos de cebra en los semáforos. Devuelve (V, F, C) o None."""
+    V, F = [], []
+    def hfy(x, z): return float(hf(x, z)) + 0.05
+    def quad(p0, p1, p2, p3):
+        pts = [np.array([p[0], hfy(p[0], p[1]), p[1]]) for p in (p0, p1, p2, p3)]
+        n = np.cross(pts[1] - pts[0], pts[3] - pts[0])
+        if n[1] < 0: pts = [pts[0], pts[3], pts[2], pts[1]]
+        b = len(V) * 1; base = sum(1 for _ in V)
+        for q in pts: V.append(q)
+        F.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]])
+    def strip(ax, az, bx, bz, off, hw):
+        L = math.hypot(bx - ax, bz - az)
+        if L < 0.05: return
+        fx, fz = (bx - ax) / L, (bz - az) / L; nx, nz = -fz, fx
+        quad((ax + nx * (off - hw), az + nz * (off - hw)), (ax + nx * (off + hw), az + nz * (off + hw)),
+             (bx + nx * (off + hw), bz + nz * (off + hw)), (bx + nx * (off - hw), bz + nz * (off - hw)))
+    for r in road_lines:
+        k, w, pts = r["k"], r["w"], r["p"]
+        if k not in ("primary", "secondary", "tertiary", "residential", "unclassified") or w < 5.5: continue
+        total = sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+        if total < 24: continue
+        dist = 0.0
+        for i in range(len(pts) - 1):
+            ax, az = pts[i]; bx, bz = pts[i + 1]; L = math.hypot(bx - ax, bz - az)
+            if L < 0.3: dist += L; continue
+            fx, fz = (bx - ax) / L, (bz - az) / L
+            step = 1.25; t = 0.0
+            while t < L - 1e-6:
+                t2 = min(L, t + step); sa, sb = dist + t, dist + t2
+                mxp, mzp = ax + fx * (t + t2) / 2, az + fz * (t + t2) / 2
+                if x0 <= mxp < x1 and z0 <= mzp < z1 and sa > 9 and sb < total - 9:
+                    p0 = (ax + fx * t, az + fz * t); p1 = (ax + fx * t2, az + fz * t2)
+                    if not r["ow"] and (sa % 7.5) < 2.5: strip(p0[0], p0[1], p1[0], p1[1], 0.0, 0.07)          # eje discontinuo
+                    if r["ow"] and r["ln"] >= 2 and (sa % 7.5) < 2.5: strip(p0[0], p0[1], p1[0], p1[1], 0.0, 0.07)
+                    if k in ("primary", "secondary", "tertiary"):                                                # bordes continuos
+                        for sd in (1, -1): strip(p0[0], p0[1], p1[0], p1[1], sd * (w / 2 - 0.35), 0.06)
+                t = t2
+            dist += L
+    # pasos de cebra en semáforos
+    for (sx, sz) in signals:
+        if not (x0 <= sx < x1 and z0 <= sz < z1): continue
+        best = None
+        for r in road_lines:
+            if r["k"] not in ("primary", "secondary", "tertiary", "residential"): continue
+            pts = r["p"]
+            for i in range(len(pts) - 1):
+                ax, az = pts[i]; bx, bz = pts[i + 1]; dx, dz = bx - ax, bz - az; l2 = dx * dx + dz * dz
+                if l2 < 0.01: continue
+                t = max(0, min(1, ((sx - ax) * dx + (sz - az) * dz) / l2)); px, pz = ax + t * dx, az + t * dz; d = math.hypot(sx - px, sz - pz)
+                if d < 14 and (best is None or d < best[0]): best = (d, px, pz, dx / math.sqrt(l2), dz / math.sqrt(l2), r["w"])
+        if best is None: continue
+        _, px, pz, fx, fz, w = best; nx, nz = -fz, fx
+        n = int((w - 1.0) / 0.95)
+        for j in range(n):
+            lat = -((n - 1) * 0.95) / 2 + j * 0.95
+            cx, cz = px + nx * lat, pz + nz * lat
+            quad((cx - fx * 1.6 - nx * 0.25, cz - fz * 1.6 - nz * 0.25), (cx - fx * 1.6 + nx * 0.25, cz - fz * 1.6 + nz * 0.25),
+                 (cx + fx * 1.6 + nx * 0.25, cz + fz * 1.6 + nz * 0.25), (cx + fx * 1.6 - nx * 0.25, cz + fz * 1.6 - nz * 0.25))
+    if not V: return None
+    Va = np.array(V); C = np.tile([240, 240, 234, 255], (len(Va), 1)).astype(np.uint8)
+    return Va, np.array(F), C
+
+
+def curbs(walk_t, roads_t, x0, z0, x1, z1):
+    """Bordillo: pared vertical en el borde de las aceras que dan a la calzada."""
+    if walk_t.is_empty or roads_t.is_empty: return None
+    near_road = roads_t.buffer(0.45); shapely.prepare(near_road)
+    V, F = [], []
+    for poly in polys_of(walk_t):
+        for ring in [poly.exterior] + list(poly.interiors):
+            c = list(ring.coords)
+            for (ax, az), (bx, bz) in zip(c[:-1], c[1:]):
+                L = math.hypot(bx - ax, bz - az)
+                if L < 0.3: continue
+                n = max(1, int(L / 4.0)); fx, fz = (bx - ax) / L, (bz - az) / L
+                for i in range(n):
+                    p0 = (ax + (bx - ax) * i / n, az + (bz - az) * i / n); p1 = (ax + (bx - ax) * (i + 1) / n, az + (bz - az) * (i + 1) / n)
+                    mx, mz = (p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2
+                    if not (x0 <= mx < x1 and z0 <= mz < z1): continue
+                    # normal hacia la calzada (lado donde hay asfalto)
+                    nx, nz = fz, -fx
+                    if not shapely.contains_xy(near_road, mx + nx * 0.5, mz + nz * 0.5):
+                        nx, nz = -nx, -nz
+                        if not shapely.contains_xy(near_road, mx + nx * 0.5, mz + nz * 0.5): continue
+                    ys = [float(hf(p0[0], p0[1])), float(hf(p1[0], p1[1]))]
+                    q = [np.array([p0[0], ys[0] + 0.03, p0[1]]), np.array([p1[0], ys[1] + 0.03, p1[1]]),
+                         np.array([p1[0], ys[1] + 0.12, p1[1]]), np.array([p0[0], ys[0] + 0.12, p0[1]])]
+                    nrm = np.cross(q[1] - q[0], q[3] - q[0])
+                    if nrm[0] * nx + nrm[2] * nz < 0: q = [q[0], q[3], q[2], q[1]]
+                    b = len(V)
+                    V.extend(q); F.extend([[b, b + 1, b + 2], [b, b + 2, b + 3]])
+    if not V: return None
+    Va = np.array(V); C = np.tile([196, 192, 182, 255], (len(Va), 1)).astype(np.uint8)
+    return Va, np.array(F), C
+
 # ---------- construcción de una tesela ----------
 def build_tile(args):
     tx, tz = args
@@ -278,7 +443,8 @@ def build_tile(args):
             w = float(str(t.get("width", "0")).split()[0] or 0) if str(t.get("width", "")).replace(".", "").isdigit() else 0
             if not w: w = max(ROAD_W[k], int(t["lanes"]) * 3.2 if str(t.get("lanes", "")).isdigit() else 0)
             road_geoms.append(LineString(pts).buffer(w / 2, cap_style=2, join_style=1))
-            road_lines.append({"k": k, "w": w, "p": [[round(x, 2), round(z, 2)] for x, z in pts]})
+            road_lines.append({"k": k, "w": w, "ow": t.get("oneway") in ("yes", "1", "true", "-1"), "ln": int(t["lanes"]) if str(t.get("lanes", "")).isdigit() else 0,
+                               "p": [[round(x, 2), round(z, 2)] for x, z in pts]})
         elif k in WALK_W:
             walk_geoms.append(LineString(pts).buffer(WALK_W[k] / 2, cap_style=2, join_style=1))
     roads = unary_union(road_geoms) if road_geoms else Polygon()
@@ -311,19 +477,19 @@ def build_tile(args):
     parks_t = parks.intersection(tbox)
 
     # --- árboles y farolas ---
-    trees, lamps = [], []
+    trees, lamps, signals = [], [], []
     for e in gather(tx, tz, "nodes"):
         if e.get("type") != "node": continue
         x, z = P(e)
         if not (x0 <= x < x1 and z0 <= z < z1): continue
         t = e.get("tags", {})
         if t.get("natural") == "tree":
-            sp = (t.get("species", "") + t.get("genus", "") + t.get("species:en", "")).lower()
-            palm = t.get("leaf_type") == "palm_leaved" or "phoenix" in sp or "washingtonia" in sp or "palm" in sp
-            trees.append([round(x, 2), round(z, 2), 1 if palm else 0])
+            trees.append([round(x, 2), round(z, 2), tree_kind(t, x, z)])
         else:
-            lamps.append([round(x, 2), round(z, 2), 1 if t.get("highway") == "traffic_signals" else 0])
-    tree_obst = [{"id": 0, "h": 4, "p": [[round(x + 0.4 * math.cos(a * math.pi / 4), 2), round(z + 0.4 * math.sin(a * math.pi / 4), 2)] for a in range(9)]} for x, z, _ in trees]
+            is_sig = t.get("highway") == "traffic_signals"
+            for (fx_, fz_, yaw_) in furniture_positions(x, z, is_sig, road_lines):
+                lamps.append([round(fx_, 2), round(fz_, 2), 1 if is_sig else 0, round(yaw_, 3)])
+            if is_sig: signals.append((x, z))
 
     # --- edificios ---
     wv, wf, wc, wu = [], [], [], []; rv, rf, rc = [], [], []
@@ -400,6 +566,13 @@ def build_tile(args):
                 landmark_extras(e["id"], poly, rh, ytop, lm_parts, road_lines)
             collid.append({"id": e["id"], "h": round(h, 1), "p": [[round(x, 2), round(z, 2)] for x, z in poly.exterior.coords]})
 
+    # --- arbolado de calle y obstáculos de árboles ---
+    bshapes = [Polygon(b["p"]).buffer(0) for b in collid if len(b["p"]) >= 4]
+    bidx = STRtree(bshapes) if bshapes else None
+    if bidx is not None:
+        trees += street_trees(road_lines, walk_t, trees, bshapes, bidx, x0, z0, x1, z1)
+    tree_obst = [{"id": 0, "h": 4, "p": [[round(x + 0.4 * math.cos(a * math.pi / 4), 2), round(z + 0.4 * math.sin(a * math.pi / 4), 2)] for a in range(9)]} for x, z, _ in trees]
+
     # --- fuentes con estatua ---
     stone_c = hexrgb(0xd9d3c3); water_c = hexrgb(0x4aa3d6); bronze_c = hexrgb(0x6b5a3a)
     for (fx, fz, R, sc, star, fid) in FOUNTAINS:
@@ -420,8 +593,8 @@ def build_tile(args):
         if r is not None: parts.append((name, r[0], r[1], r[2], r[3]))
     add("Ground", land.intersection(tbox), 0.0, hexrgb(0xb7ad98), tint=True)
     add("Park", parks_t, 0.02, hexrgb(0x5f8a4a))
-    add("Road", roads_t, 0.03, hexrgb(0x3a3d42))
-    add("Sidewalk", walk_t, 0.06, hexrgb(0xc9c0ab))
+    add("Road", roads_t, 0.03, hexrgb(0x33363b))
+    add("Sidewalk", walk_t, 0.12, hexrgb(0xd2cbb9))
     if not mosaic_t.is_empty:
         big = max(polys_of(unary_union(mosaic_geoms)), key=lambda g: g.area)
         mrr = big.minimum_rotated_rectangle; mc = list(mrr.exterior.coords)
@@ -431,7 +604,11 @@ def build_tile(args):
         def muv(x, z):
             dx, dz = x - cx0, z - cz0
             return np.column_stack([(dx * ax[0] + dz * ax[1]) / 9.0, (dx * pr[0] + dz * pr[1]) / 9.0])
-        add("Mosaic", mosaic_t, 0.07, hexrgb(0xffffff), uvfn=muv)
+        add("Mosaic", mosaic_t, 0.05, hexrgb(0xffffff), uvfn=muv)
+    mk = road_marks(road_lines, signals, x0, z0, x1, z1)
+    if mk is not None: parts.append(("Marks", mk[0], mk[1], mk[2], None))
+    cb = curbs(walk_t, roads_t, x0, z0, x1, z1)
+    if cb is not None: parts.append(("Curb", cb[0], cb[1], cb[2], None))
     if not sea_free.is_empty:
         w = tri_mesh(sea_free, -0.45, hexrgb(0x1d6fa5))
         if w is not None: parts.append(("Water", np.asarray(w.vertices), np.asarray(w.faces), np.asarray(w.visual.vertex_colors), None))
