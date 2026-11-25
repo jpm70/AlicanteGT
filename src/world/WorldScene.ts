@@ -114,6 +114,18 @@ export class WorldScene {
       new THREE.TextureLoader().loadAsync(`${base}world/ortho.jpg`).catch(() => null),
     ]);
     if (ortho) {
+      // GPU con límite de textura menor que 4096 px: se reduce la ortofoto para que no falle
+      const maxTex = this.renderer.capabilities.maxTextureSize;
+      const img = ortho.image as HTMLImageElement;
+      if (img.width > maxTex) {
+        const k = maxTex / img.width;
+        const cv = document.createElement('canvas');
+        cv.width = Math.floor(img.width * k);
+        cv.height = Math.floor(img.height * k);
+        cv.getContext('2d')!.drawImage(img, 0, 0, cv.width, cv.height);
+        ortho.image = cv as unknown as HTMLImageElement;
+        ortho.needsUpdate = true;
+      }
       ortho.colorSpace = THREE.SRGBColorSpace;
       ortho.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
       ortho.wrapS = ortho.wrapT = THREE.ClampToEdgeWrapping;
