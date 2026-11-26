@@ -6,8 +6,8 @@ KLAT = 111320.0
 KLNG = 111320.0 * math.cos(math.radians(LAT0))
 
 TILE = 1000                     # lado de cada tesela (m)
-TX_RANGE = range(-3, 4)         # x: -3000 .. 4000
-TZ_RANGE = range(-4, 1)         # z: -4000 .. 1000
+TX_RANGE = range(-3, 6)         # x: -3000 .. 6000
+TZ_RANGE = range(-6, 1)         # z: -6000 .. 1000
 X0, X1 = TX_RANGE.start * TILE, TX_RANGE.stop * TILE
 Z0, Z1 = TZ_RANGE.start * TILE, TZ_RANGE.stop * TILE
 

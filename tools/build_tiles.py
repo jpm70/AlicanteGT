@@ -18,12 +18,12 @@ from shapely.ops import unary_union
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from world_config import *          # LAT0, LNG0, KLAT, KLNG, TILE, X0.., tiles(), tile_box(), ortho_px()
 from world_lib import *
-from world_decks import build_decks             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
+from world_decks import build_decks, _Mesh             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
 
 D = "tools/data/"
 OUT = "public/world/tiles"
 BAY, FLOOR = 3.2, 3.1
-CELL = 25
+CELL = 10                       # = paso de la malla de relieve (make_dem_fine.py)
 
 ROAD_W = {"motorway": 12, "trunk": 11, "primary": 10, "secondary": 8.5, "tertiary": 7.5, "residential": 6.2,
           "unclassified": 6.2, "living_street": 5.2, "service": 4.2, "primary_link": 6, "secondary_link": 5.5, "tertiary_link": 5}
@@ -93,13 +93,12 @@ def polys_of(g):
 
 # ---------- relieve ----------
 def load_dem():
-    d = json.load(open(D + "dem.json"))
-    G["DX0"], G["DZ0"], G["DST"] = d["x0"], d["z0"], d["step"]
-    G["DXS"] = list(range(d["x0"], d["x1"] + 1, d["step"])); G["DZS"] = list(range(d["z0"], d["z1"] + 1, d["step"]))
-    H = np.array([[(d["h"].get(f"{x},{z}") or 0.0) for x in G["DXS"]] for z in G["DZS"]], dtype=float)
-    H = np.maximum(H, 0.0)
-    b = np.pad(H, 1, mode="edge")
-    G["HG"] = sum(b[i:i + H.shape[0], j:j + H.shape[1]] for i in range(3) for j in range(3)) / 9.0
+    """Relieve fino de 10 m con calzadas aplanadas (tools/make_dem_fine.py)."""
+    z = np.load(D + "dem_fine.npz")
+    G["DX0"], G["DZ0"], G["DST"] = int(z["x0"]), int(z["z0"]), int(z["step"])
+    H = z["H"].astype(float)
+    G["DXS"] = [G["DX0"] + i * G["DST"] for i in range(H.shape[1])]; G["DZS"] = [G["DZ0"] + j * G["DST"] for j in range(H.shape[0])]
+    G["HG"] = H
 
 
 def hf(x, z):
@@ -550,6 +549,48 @@ def build_tile(args):
                 lamps.append([round(fx_, 2), round(fz_, 2), 1 if is_sig else 0, round(yaw_, 3)])
             if is_sig: signals.append((x, z))
 
+    # --- detalles de fachada: escaparates, toldos y balcones en las fachadas que dan a la calle ---
+    det = _Mesh(); roads_near = roads.buffer(14); shapely.prepare(roads_near)
+    AWN = [0xc0392b, 0x2e6f95, 0xe0a526, 0x3b7d4f, 0xefe9d8, 0x8e3b46, 0xd9772b]
+    FRAME = [0x3a3a3e, 0x5b4a3a, 0x2a3b4a, 0x6b6b6f]
+
+    def facade_details(ring, ccw, levels, seed):
+        nb_ = 0
+        for ri in range(len(ring) - 1):
+            (xa, za), (xb, zb) = ring[ri], ring[ri + 1]
+            dx, dz = xb - xa, zb - za; L = math.hypot(dx, dz)
+            if L < 5.0: continue
+            tx_, tz_ = dx / L, dz / L
+            nx_, nz_ = (tz_, -tx_) if ccw else (-tz_, tx_)
+            mx, mz = (xa + xb) / 2, (za + zb) / 2
+            if not roads_near.contains(Point(mx + nx_ * 1.5, mz + nz_ * 1.5)): continue
+            hsh = (seed * 2654435761 + ri * 40503) & 0xFFFFFFFF
+            y0 = float(hf(mx, mz)); ang = -math.atan2(tz_, tx_); want = (nx_, 0.0, nz_)
+            if L >= 6.0 and levels >= 2 and (hsh % 100) < 50:
+                a0 = 0.9; a1 = L - 0.9; o = 0.07
+                def pt(t, y, d): return (xa + tx_ * t + nx_ * d, y, za + tz_ * t + nz_ * d)
+                det.quad([pt(a0, y0 + 0.25, o), pt(a1, y0 + 0.25, o), pt(a1, y0 + 2.7, o), pt(a0, y0 + 2.7, o)], want, [38, 52, 62, 255])
+                fc = hexrgb(FRAME[(hsh >> 8) % len(FRAME)])
+                det.quad([pt(a0, y0 + 2.7, o), pt(a1, y0 + 2.7, o), pt(a1, y0 + 3.05, o), pt(a0, y0 + 3.05, o)], want, fc)
+                det.quad([pt(a0 - 0.15, y0 + 0.0, o), pt(a0, y0 + 0.0, o), pt(a0, y0 + 3.05, o), pt(a0 - 0.15, y0 + 3.05, o)], want, fc)
+                det.quad([pt(a1, y0 + 0.0, o), pt(a1 + 0.15, y0 + 0.0, o), pt(a1 + 0.15, y0 + 3.05, o), pt(a1, y0 + 3.05, o)], want, fc)
+                if (hsh >> 12) % 100 < 55:
+                    ac = hexrgb(AWN[(hsh >> 16) % len(AWN)]); dp = 1.25
+                    det.quad([pt(a0, y0 + 3.15, o), pt(a1, y0 + 3.15, o), pt(a1, y0 + 2.75, dp), pt(a0, y0 + 2.75, dp)], (nx_, 0.6, nz_), ac)
+                    det.quad([pt(a0, y0 + 2.75, dp), pt(a1, y0 + 2.75, dp), pt(a1, y0 + 2.5, dp), pt(a0, y0 + 2.5, dp)], want, ac)
+            if levels >= 5 and L >= 8.0 and (hsh >> 6) % 100 < 55 and nb_ < 24:
+                n = min(int(L // 7.5), 3)
+                for k in range(n):
+                    t = (k + 0.5) / n * L
+                    if t < 1.6 or t > L - 1.6: continue
+                    cx, cz = xa + tx_ * t + nx_ * 0.4, za + tz_ * t + nz_ * 0.4
+                    for fl in range(1, min(int(levels) - 1, 4), 2):
+                        yy = y0 + fl * FLOOR + 0.35
+                        det.add_parts([box_at(cx, cz, yy, yy + 0.14, 1.9, 0.85, ang, [196, 190, 178, 255])])
+                        cx2, cz2 = xa + tx_ * t + nx_ * 0.8, za + tz_ * t + nz_ * 0.8
+                        det.add_parts([box_at(cx2, cz2, yy + 0.14, yy + 1.0, 1.9, 0.06, ang, [58, 60, 64, 255])])
+                        nb_ += 1
+
     # --- edificios ---
     wv, wf, wc, wu = [], [], [], []; rv, rf, rc = [], [], []
     nwv = [0]; collid = []; lm_parts = []; castle_parts = []; lm_obst = []; styles = [0, 0, 0, 0]
@@ -615,6 +656,7 @@ def build_tile(args):
             ext = list(poly.exterior.coords)
             rh = hf([c[0] for c in ext], [c[1] for c in ext]); ytop = float(rh.max()) + h
             emit_ring(ext, poly.exterior.is_ccw, st, levels_f, col, ytop)
+            if not is_lm and h >= 5.0: facade_details(ext, poly.exterior.is_ccw, levels_f, seed + pi)
             for hole in poly.interiors:
                 emit_ring(list(hole.coords), not hole.is_ccw, st, levels_f, col, ytop)
             rm = tri_mesh(poly, ytop, rcol)
@@ -675,6 +717,8 @@ def build_tile(args):
         w = tri_mesh(sea_free, -0.45, hexrgb(0x1d6fa5))
         if w is not None: parts.append(("Water", np.asarray(w.vertices), np.asarray(w.faces), np.asarray(w.visual.vertex_colors), None))
     if wv: parts.append(("Walls", np.array(wv), np.array(wf), np.array(wc), np.array(wu)))
+    dm = det.out()
+    if dm is not None: parts.append(("Detail", dm[0], dm[1], dm[2], None))
     if rv: parts.append(("Roofs", np.vstack(rv), np.vstack(rf), np.vstack(rc), None))
     if castle_parts:
         V, F, C = join_parts(castle_parts); parts.append(("Castle", V, F, C, None))
@@ -812,7 +856,7 @@ def build_castle():
         for ix, xx in enumerate(DXS):
             if math.hypot(xx - CASTLE_GUESS[0], zz - CASTLE_GUESS[1]) <= 150 and (best is None or HG[iz, ix] > best[0]): best = (HG[iz, ix], xx, zz)
     hmax, sx0, sz0 = best
-    cells = [box(xx - 12.5, zz - 12.5, xx + 12.5, zz + 12.5) for iz, zz in enumerate(DZS) for ix, xx in enumerate(DXS)
+    cells = [box(xx - G["DST"] / 2, zz - G["DST"] / 2, xx + G["DST"] / 2, zz + G["DST"] / 2) for iz, zz in enumerate(DZS) for ix, xx in enumerate(DXS)
              if math.hypot(xx - sx0, zz - sz0) <= 230 and HG[iz, ix] >= hmax * 0.90]
     area = unary_union(cells).buffer(10).buffer(-10)
     if isinstance(area, MultiPolygon): area = max(area.geoms, key=lambda g: g.area)
