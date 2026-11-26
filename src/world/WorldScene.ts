@@ -14,6 +14,8 @@ import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider, type DriveMask } from './collision';
 import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
 import { createPalmAssets, type PalmAssets } from './palms';
+import { Traffic, type ParkedRec, type RoadRec } from './traffic';
+import { Pedestrians } from './pedestrians';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
@@ -65,6 +67,8 @@ export class WorldScene {
   readonly camera = new THREE.PerspectiveCamera(62, 1, 0.3, 4000);
   readonly rig: SportsCarRig;
   collision: CollisionWorld | null = null;
+  readonly traffic: Traffic;
+  readonly peds: Pedestrians;
 
   private key: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
@@ -99,6 +103,7 @@ export class WorldScene {
   public loadedCount = 0;
   private streets = new Map<string, [string, number[][]][]>();
   private lastStreet = '';
+  private pedTest = new URLSearchParams(window.location.search).get('pedtest') === '1';
   private camClock = 0;
   private camRoll = 0;
   private groundPitch = 0;
@@ -157,6 +162,11 @@ export class WorldScene {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
     this.scene.add(this.rig.root);
+    this.traffic = new Traffic(this.scene);
+    this.peds = new Pedestrians(this.scene, this.traffic, (x, z) => this.collision?.sidewalk(x, z) ?? true);
+    if (new URLSearchParams(window.location.search).get('traffic') === '0') { this.traffic.enabled = false; this.peds.enabled = false; }
+    if (new URLSearchParams(window.location.search).get('peds') === '0') this.peds.enabled = false;
+    if (new URLSearchParams(window.location.search).get('debug') === '1') (window as unknown as { __gt: WorldScene }).__gt = this;
 
     this.scene.fog = this.fog;
     this.buildSky();
@@ -389,11 +399,13 @@ export class WorldScene {
       this.scene.add(lt.group);
       this.tiles.set(key, lt);
       this.streets.set(key, (col.streets ?? []) as [string, number[][]][]);
+      this.traffic.addTile(key, (col.roads ?? []) as RoadRec[], (col.parked ?? []) as ParkedRec[]);
       this.registerDecks(key, (col.decks ?? []) as { w: number; p: [number, number, number][] }[]);
       this.collision?.addTile(
         key,
         [...(col.buildings as BuildingCollider[]), ...((col.obstacles ?? []) as BuildingCollider[])],
-        (col.drive ?? null) as DriveMask | null
+        (col.drive ?? null) as DriveMask | null,
+        (col.walk ?? null) as string | null
       );
       this.loadedCount = this.tiles.size;
     } finally {
@@ -483,6 +495,7 @@ export class WorldScene {
     this.collision?.removeTile(key);
     this.unregisterDecks(key);
     this.streets.delete(key);
+    this.traffic.removeTile(key);
     this.tiles.delete(key);
     this.loadedCount = this.tiles.size;
   }
@@ -986,6 +999,9 @@ export class WorldScene {
     this.rim.position.set(p.x + 14, 9, p.z + 16);
 
     this.updateLampLights(p.x, p.z);
+    this.traffic.update(dt, p.x, p.z, hd, state.speedMps, this.mode === 'night' ? 0.5 : 1);
+    if (this.pedTest) { this.pedTest = false; this.peds.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
+    this.peds.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.4 : this.mode === 'sunset' ? 0.8 : 1);
     this.tickSky(p.x, p.z, dt);
     if (this.composer) this.composer.render(dt);
     else this.renderer.render(this.scene, this.camera);
@@ -997,6 +1013,8 @@ export class WorldScene {
     this.envTarget?.dispose();
     this.pmrem?.dispose();
     this.composer?.dispose();
+    this.peds.dispose();
+    this.traffic.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

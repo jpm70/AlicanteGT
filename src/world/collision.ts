@@ -22,6 +22,7 @@ const CORNERS: [number, number][] = [[1.0, 2.3], [-1.0, 2.3], [1.0, -2.3], [-1.0
 
 interface TileData {
   grid: Map<string, Prepared[]>;
+  walk: Uint8Array | null;
   drive: Uint8Array | null;
   dm: DriveMask | null;
   count: number;
@@ -38,9 +39,14 @@ export class CollisionWorld {
   /** Región total del mundo (m): fuera de ella no se puede conducir. */
   setBounds(x0: number, z0: number, x1: number, z1: number) { this.bounds = [x0, z0, x1, z1]; }
 
-  addTile(key: string, buildings: BuildingCollider[], drive: DriveMask | null) {
+  addTile(key: string, buildings: BuildingCollider[], drive: DriveMask | null, walk: string | null = null) {
     this.removeTile(key);
-    const td: TileData = { grid: new Map(), drive: null, dm: drive, count: 0 };
+    const td: TileData = { grid: new Map(), walk: null, drive: null, dm: drive, count: 0 };
+    if (walk) {
+      const bw = atob(walk);
+      td.walk = new Uint8Array(bw.length);
+      for (let i = 0; i < bw.length; i++) td.walk[i] = bw.charCodeAt(i);
+    }
     if (drive) {
       const bin = atob(drive.bits);
       td.drive = new Uint8Array(bin.length);
@@ -84,6 +90,20 @@ export class CollisionWorld {
     if (ix < 0 || iz < 0 || ix >= d.nx || iz >= d.nz) return true;
     const k = iz * d.nx + ix;
     return ((t.drive[k >> 3] >> (7 - (k & 7))) & 1) === 1;
+  }
+
+  /** ¿Es calzada o acera (transitable a pie) en (x, z)? */
+  walkable(x: number, z: number): boolean { return this.canDrive(x, z); }
+
+  /** ¿Es acera, plaza o paseo (no calzada)? Sin máscara de aceras en la tesela, cae en `walkable`. */
+  sidewalk(x: number, z: number): boolean {
+    const t = this.tiles.get(Math.floor(x / TILE) + '_' + Math.floor(z / TILE));
+    if (!t || !t.dm || !t.walk) return this.canDrive(x, z);
+    const d = t.dm;
+    const ix = Math.floor((x - d.x0) / d.cell), iz = Math.floor((z - d.z0) / d.cell);
+    if (ix < 0 || iz < 0 || ix >= d.nx || iz >= d.nz) return false;
+    const k = iz * d.nx + ix;
+    return ((t.walk[k >> 3] >> (7 - (k & 7))) & 1) === 1;
   }
 
   private carFits(x: number, z: number, hd: number): boolean {

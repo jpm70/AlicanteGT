@@ -204,6 +204,9 @@ export default function App() {
         handleCycleCamera();
       } else if (code === 'KeyH' && !e.repeat) {
         setDockCollapsed((prev) => !prev);
+      } else if (code === 'KeyT' && !e.repeat) {
+        const w = worldRef.current;                       // T: tráfico y peatones sí/no
+        if (w) { const on = !w.traffic.enabled; w.traffic.enabled = on; w.peds.enabled = on; }
       } else if (code === 'Digit1' && !e.repeat) {
         applyAtmosphereMode('sunset');
       } else if (code === 'Digit2' && !e.repeat) {
@@ -299,7 +302,7 @@ export default function App() {
       const input = controlsRef.current;
 
       stepCarPhysics(state, input, dt);
-      const impact = world.collision?.resolve(state) ?? 0;
+      const impact = Math.max(world.collision?.resolve(state) ?? 0, world.traffic.collide(state));
       if (impact > 0.25 && Math.abs(state.speedMps) > 4) state.shake = Math.min(1, Math.max(state.shake, impact * Math.min(Math.abs(state.speedMps) / 25, 1)));
 
       if (audioRef.current) {

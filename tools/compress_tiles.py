@@ -1,7 +1,7 @@
 """Comprime con meshopt (+ cuantización) los .glb de public/world/tiles. Idempotente: salta los ya comprimidos.
 Requiere bun (usa `bunx @gltf-transform/cli`). Ejecutar DESPUÉS de build_tiles.py: python tools/compress_tiles.py
 El juego los descomprime en el navegador con MeshoptDecoder (src/world/WorldScene.ts)."""
-import glob, json, os, shutil, struct, subprocess, sys, tempfile
+import glob, json, os, shutil, struct, subprocess, sys, tempfile, time
 from concurrent.futures import ThreadPoolExecutor
 
 DIR = "public/world/tiles"
@@ -22,8 +22,13 @@ def work(path):
     a = os.path.getsize(path)
     r = subprocess.run(["bunx", CLI, "meshopt", path, tmp, "--level", "high"], capture_output=True, text=True, shell=(os.name == "nt"))
     if r.returncode != 0 or not os.path.exists(tmp): return (path, a, a, "ERROR " + (r.stderr or r.stdout)[-200:])
-    b = os.path.getsize(tmp); shutil.move(tmp, path)
-    return (path, a, b, "ok")
+    b = os.path.getsize(tmp)
+    for intento in range(6):                                  # Windows puede tener el fichero abierto un instante (servidor / navegador)
+        try:
+            shutil.move(tmp, path); return (path, a, b, "ok")
+        except OSError as ex:
+            time.sleep(2)
+    return (path, a, a, "BLOQUEADO (cerrar el servidor/navegador y repetir)")
 
 
 if __name__ == "__main__":
