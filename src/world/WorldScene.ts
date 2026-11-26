@@ -339,11 +339,12 @@ export class WorldScene {
       sh.uniforms.uOB = { value: new THREE.Vector4(info.tx * TILE, info.tz * TILE, TILE, TILE) };
       sh.uniforms.uOMix = { value: tex ? mix : 0 };
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec2 vOXZ;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
+        .replace('#include <common>', '#include <common>\nvarying vec2 vOXZ;\nvarying vec3 vWP;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOXZ = (modelMatrix * vec4(transformed, 1.0)).xz;\nvWP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
           varying vec2 vOXZ;
+          varying vec3 vWP;
           uniform sampler2D uOrtho;
           uniform vec4 uOB;
           uniform float uOMix;
@@ -354,6 +355,15 @@ export class WorldScene {
             vec3 oc = texture2D(uOrtho, vec2(ouv.x, 1.0 - ouv.y)).rgb;
             diffuseColor.rgb = mix(diffuseColor.rgb, oc, uOMix);
           }
+          ${name === 'Ground' ? `{
+            vec3 gn = normalize(cross(dFdx(vWP), dFdy(vWP)));
+            float steep = smoothstep(0.95, 0.72, abs(gn.y));
+            float n1 = hs(floor(vOXZ * 0.9)), n2 = hs(floor(vOXZ * 0.23 + vec2(vWP.y * 0.5, 0.0)));
+            float strat = hs(vec2(floor(vWP.y * 1.6), 7.0));
+            vec3 rock = mix(vec3(0.60, 0.50, 0.36), vec3(0.42, 0.35, 0.27), n2 * 0.6 + strat * 0.4);
+            rock *= 0.88 + 0.2 * n1;
+            diffuseColor.rgb = mix(diffuseColor.rgb, rock, steep * 0.85);
+          }` : ''}
           ${kind === 1 ? `float g1 = hs(floor(vOXZ * 6.0)); float g2 = hs(floor(vOXZ * 0.8));
           diffuseColor.rgb *= 0.9 + 0.13 * g1 + 0.07 * g2;` : ''}
           ${kind === 2 ? `vec2 q = vOXZ / 0.6; vec2 f = fract(q); vec2 id = floor(q);
