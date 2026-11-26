@@ -213,8 +213,8 @@ export const DriverCockpitOverlay: React.FC<DriverCockpitOverlayProps> = ({
       {/* Cockpit: contenedor con la proporción exacta del lienzo, centrado y pegado abajo */}
       <div
         ref={shakeRef}
-        className={`absolute left-1/2 -translate-x-1/2 will-change-transform transition-[bottom] duration-200 ${dockCollapsed ? '-bottom-4' : 'bottom-6 sm:bottom-10'}`}
-        style={{ width: 'min(max(100vw, 100vh), 127vh)', aspectRatio: `${W} / ${H}` }}
+        className="absolute left-1/2 -translate-x-1/2 will-change-transform transition-[bottom] duration-200"
+        style={{ width: 'min(max(100vw, 100vh), 127vh)', aspectRatio: `${W} / ${H}`, bottom: dockCollapsed ? '-11%' : '-6%' }}
       >
         {/* alas laterales: el cuero del salpicadero continúa hasta los bordes en pantallas anchas */}
         <div
@@ -274,10 +274,10 @@ export const DriverCockpitOverlay: React.FC<DriverCockpitOverlayProps> = ({
           </defs>
 
           {/* capó con power dome visible sobre el cowl */}
-          <path d="M 120 78 Q 380 28 720 26 Q 1060 28 1320 78 L 1352 130 L 88 130 Z" fill="url(#hoodPaint)" />
-          <path d="M 120 78 Q 380 28 720 26 Q 1060 28 1320 78 L 1336 92 Q 1060 44 720 42 Q 380 44 104 92 Z" fill="url(#hoodSheen)" />
-          <path d="M 420 40 Q 470 70 492 120" stroke="rgba(255,255,255,0.28)" strokeWidth="2" fill="none" />
-          <path d="M 1020 40 Q 970 70 948 120" stroke="rgba(255,255,255,0.28)" strokeWidth="2" fill="none" />
+          <path d="M 170 112 Q 420 96 720 94 Q 1020 96 1270 112 L 1310 132 L 130 132 Z" fill="url(#hoodPaint)" />
+          <path d="M 170 112 Q 420 96 720 94 Q 1020 96 1270 112 L 1284 120 Q 1020 104 720 102 Q 420 104 156 120 Z" fill="url(#hoodSheen)" />
+          <path d="M 440 100 Q 480 112 496 128" stroke="rgba(255,255,255,0.25)" strokeWidth="2" fill="none" />
+          <path d="M 1000 100 Q 960 112 944 128" stroke="rgba(255,255,255,0.25)" strokeWidth="2" fill="none" />
           {/* base del parabrisas: goma y vierteaguas */}
           <path d="M 0 118 Q 360 96 720 96 Q 1080 96 1440 118 L 1440 150 L 0 150 Z" fill="#05070b" />
 

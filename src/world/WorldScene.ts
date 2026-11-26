@@ -29,6 +29,7 @@ const CAM: Record<CameraPreset, { dist: number; height: number; look: number; fo
 
 interface TileInfo { tx: number; tz: number; ortho: number; land: boolean }
 interface Manifest { tile: number; tx: [number, number]; tz: [number, number]; tiles: TileInfo[] }
+interface DeckSeg { tile: string; ax: number; az: number; ao: number; bx: number; bz: number; bo: number; hw: number }
 interface LoadedTile { key: string; group: THREE.Group; textures: THREE.Texture[]; materials: THREE.Material[] }
 
 /** Escena Three.js propia: mundo por teselas .glb de Alicante + coche + cámara + colisiones. Sin MapLibre. */
@@ -54,9 +55,11 @@ export class WorldScene {
   private lastTileKey = '';
   private wallMat: THREE.MeshStandardMaterial | null = null;
   private mosaicMat: THREE.MeshStandardMaterial | null = null;
-  private plainMats: Record<string, THREE.MeshStandardMaterial> = {};
+  private plainMats: Record<string, THREE.Material> = {};
   private dummyTex: THREE.DataTexture | null = null;
   private palmAssets: PalmAssets | null = null;
+  private deckCells = new Map<string, DeckSeg[]>();
+  private carY = 0;
   private sky: THREE.Mesh | null = null;
   private skyU = {
     uZenith: { value: new THREE.Color(0x3a7fd0) },
@@ -198,7 +201,7 @@ export class WorldScene {
           ca.needsUpdate = true;
         }
         m.receiveShadow = n !== 'Water';
-        m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle' || n === 'Landmark';
+        m.castShadow = n === 'Walls' || n === 'Roofs' || n === 'Castle' || n === 'Landmark' || n === 'Struct';
         if ((orthoTex && n in orthoMix) || n === 'Road' || n === 'Sidewalk') {
           const mat = this.makeOrthoMaterial(n, orthoMix[n] ?? 0, orthoTex, info);
           lt.materials.push(mat);
@@ -208,7 +211,7 @@ export class WorldScene {
         } else if (n === 'Mosaic') {
           m.material = this.mosaicMat ??= new THREE.MeshStandardMaterial({ map: createMosaicTexture(), roughness: 0.6, metalness: 0.05 });
         } else {
-          m.material = this.plainMats[n] ??= new THREE.MeshStandardMaterial({
+          m.material = this.plainMats[n] ??= n === 'Glow' ? new THREE.MeshBasicMaterial({ vertexColors: true }) : new THREE.MeshStandardMaterial({
             vertexColors: true,
             flatShading: true,
             roughness: n === 'Road' ? 0.92 : n === 'Water' ? 0.12 : 0.85,
@@ -224,6 +227,7 @@ export class WorldScene {
       this.addLamps(lt, (col.lamps ?? []) as [number, number, number, number?][]);
       this.scene.add(lt.group);
       this.tiles.set(key, lt);
+      this.registerDecks(key, (col.decks ?? []) as { w: number; p: [number, number, number][] }[]);
       this.collision?.addTile(
         key,
         [...(col.buildings as BuildingCollider[]), ...((col.obstacles ?? []) as BuildingCollider[])],
@@ -233,6 +237,51 @@ export class WorldScene {
     } finally {
       this.loading.delete(key);
     }
+  }
+
+  /** Puentes y túneles: segmentos con su altura relativa al terreno, indexados en celdas de 30 m. */
+  private registerDecks(key: string, decks: { w: number; p: [number, number, number][] }[]) {
+    const C = 30;
+    for (const d of decks) {
+      for (let i = 0; i < d.p.length - 1; i++) {
+        const [ax, az, ao] = d.p[i], [bx, bz, bo] = d.p[i + 1];
+        const seg: DeckSeg = { tile: key, ax, az, ao, bx, bz, bo, hw: d.w / 2 + 0.3 };
+        const x0 = Math.floor((Math.min(ax, bx) - seg.hw) / C), x1 = Math.floor((Math.max(ax, bx) + seg.hw) / C);
+        const z0 = Math.floor((Math.min(az, bz) - seg.hw) / C), z1 = Math.floor((Math.max(az, bz) + seg.hw) / C);
+        for (let cx = x0; cx <= x1; cx++) for (let cz = z0; cz <= z1; cz++) {
+          const k = `${cx},${cz}`;
+          const arr = this.deckCells.get(k);
+          if (arr) arr.push(seg); else this.deckCells.set(k, [seg]);
+        }
+      }
+    }
+  }
+
+  private unregisterDecks(key: string) {
+    for (const [k, arr] of this.deckCells) {
+      const rest = arr.filter((sg) => sg.tile !== key);
+      if (rest.length) this.deckCells.set(k, rest); else this.deckCells.delete(k);
+    }
+  }
+
+  /** Altura de la superficie transitable: terreno, o el tablero de un puente / la solera de un túnel si el coche va sobre él (continuidad con `ref`). */
+  private groundY(x: number, z: number, ref: number, snap = false): number {
+    const base = heightAt(x, z);
+    const arr = this.deckCells.get(`${Math.floor(x / 30)},${Math.floor(z / 30)}`);
+    if (!arr) return base;
+    let best = base, bd = Infinity;
+    for (const sg of arr) {
+      const dx = sg.bx - sg.ax, dz = sg.bz - sg.az, l2 = dx * dx + dz * dz;
+      if (l2 < 1e-6) continue;
+      const t = Math.max(0, Math.min(1, ((x - sg.ax) * dx + (z - sg.az) * dz) / l2));
+      if (Math.hypot(x - (sg.ax + dx * t), z - (sg.az + dz * t)) > sg.hw) continue;
+      const o = sg.ao + (sg.bo - sg.ao) * t;
+      const cand = base + o;
+      // al teletransportar se prefiere la vía del corredor (túnel o puente); conduciendo, solo la que está a una altura alcanzable
+      const dd = snap ? Math.abs(o) : Math.abs(cand - ref);
+      if ((snap || dd < 2.2) && dd < bd) { best = cand; bd = dd; }
+    }
+    return best;
   }
 
   private unloadTile(key: string) {
@@ -246,6 +295,7 @@ export class WorldScene {
     lt.textures.forEach((t) => t.dispose());
     lt.materials.forEach((m) => m.dispose());
     this.collision?.removeTile(key);
+    this.unregisterDecks(key);
     this.tiles.delete(key);
     this.loadedCount = this.tiles.size;
   }
@@ -651,13 +701,15 @@ export class WorldScene {
     const p = toLocal(state.lat, state.lng);
     if (this.manifest) this.streamTiles(p.x, p.z);
     this.rig.updateFromState(state, dt);
-    const gy = heightAt(p.x, p.z);
+    if (this.camSnap) this.carY = heightAt(p.x, p.z);
+    const gy = this.groundY(p.x, p.z, this.carY, this.camSnap);
+    this.carY = gy;
     const hd = state.headingDeg * DEG;
-    const ahead = heightAt(p.x + Math.sin(hd) * 1.9, p.z - Math.cos(hd) * 1.9);
-    const behind = heightAt(p.x - Math.sin(hd) * 1.9, p.z + Math.cos(hd) * 1.9);
+    const ahead = this.groundY(p.x + Math.sin(hd) * 1.9, p.z - Math.cos(hd) * 1.9, gy);
+    const behind = this.groundY(p.x - Math.sin(hd) * 1.9, p.z + Math.cos(hd) * 1.9, gy);
     const side =
-      heightAt(p.x + Math.cos(hd) * 0.9, p.z + Math.sin(hd) * 0.9) -
-      heightAt(p.x - Math.cos(hd) * 0.9, p.z - Math.sin(hd) * 0.9);
+      this.groundY(p.x + Math.cos(hd) * 0.9, p.z + Math.sin(hd) * 0.9, gy) -
+      this.groundY(p.x - Math.cos(hd) * 0.9, p.z - Math.sin(hd) * 0.9, gy);
     this.groundPitch += (Math.atan2(ahead - behind, 3.8) - this.groundPitch) * (1 - Math.exp(-10 * dt));
     this.groundRoll += (Math.atan2(side, 1.8) - this.groundRoll) * (1 - Math.exp(-10 * dt));
     if (this.camSnap) this.camGround = gy;
