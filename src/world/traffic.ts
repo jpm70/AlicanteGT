@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { heightAt, toLatLng, toLocal } from './geo';
 import type { CarState } from '../types/game';
+import type { Signals } from './signals';
 
 /** Vía conducible de OSM: [id, clase, sentido (0 doble, 1 único, 2 único inverso), ancho, puntos]. */
 export type RoadRec = [number, string, number, number, number[][]];
@@ -102,8 +103,8 @@ function cyl(r: number, w: number, x: number, y: number, z: number, seg: number)
  * Turismo modelado por secciones (eje largo +Z, 4,3 m): carrocería redondeada, cabina inclinada con cristales y techo,
  * ruedas con llanta, faros, pilotos y retrovisores. Devuelve la parte que se tiñe con la pintura y la que no.
  */
-function buildCarGeometries(): { paint: THREE.BufferGeometry; trim: THREE.BufferGeometry } {
-  const paint: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [];
+function buildCarGeometries(): { paint: THREE.BufferGeometry; trim: THREE.BufferGeometry; lights: THREE.BufferGeometry } {
+  const paint: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [], lights: THREE.BufferGeometry[] = [];
   const NB = 18;
   // carrocería: estaciones (z, semiancho, suelo, línea de cintura / capó)
   const st: [number, number, number, number][] = [
@@ -123,8 +124,8 @@ function buildCarGeometries(): { paint: THREE.BufferGeometry; trim: THREE.Buffer
   // faros, pilotos, retrovisores, ruedas y matrícula
   trim.push(colorVerts(flatBox(1.0, 0.1, 0.06, 0, 0.5, 2.1), [0.04, 0.04, 0.04]));
   for (const sx of [-1, 1]) {
-    trim.push(colorVerts(flatBox(0.36, 0.12, 0.08, sx * 0.62, 0.72, 2.07), [0.95, 0.95, 0.88]));
-    trim.push(colorVerts(flatBox(0.36, 0.12, 0.08, sx * 0.64, 0.84, -2.1), [0.85, 0.06, 0.06]));
+    lights.push(colorVerts(flatBox(0.38, 0.14, 0.09, sx * 0.62, 0.72, 2.07), [0.95, 0.95, 0.85]));
+    lights.push(colorVerts(flatBox(0.38, 0.12, 0.09, sx * 0.64, 0.84, -2.1), [0.85, 0.06, 0.06]));
     paint.push(flatBox(0.12, 0.09, 0.2, sx * 0.97, 1.0, 0.82));
     for (const sz of [-1.38, 1.36]) {
       trim.push(colorVerts(cyl(0.33, 0.24, sx * 0.84, 0.33, sz, 14), [0.03, 0.03, 0.035]));
@@ -132,28 +133,30 @@ function buildCarGeometries(): { paint: THREE.BufferGeometry; trim: THREE.Buffer
     }
   }
   trim.push(colorVerts(flatBox(0.46, 0.11, 0.03, 0, 0.62, -2.17), [0.92, 0.92, 0.9]));
-  return { paint: mergeGeometries(paint, false)!, trim: mergeGeometries(trim, false)! };
+  return { paint: mergeGeometries(paint, false)!, trim: mergeGeometries(trim, false)!, lights: mergeGeometries(lights, false)! };
 }
 
 /** Pareja de mallas instanciadas (pintura teñida por coche + accesorios sin teñir) que comparten matrices. */
 class CarSet {
   readonly paint: THREE.InstancedMesh;
   readonly trim: THREE.InstancedMesh;
-  constructor(parts: { paint: THREE.BufferGeometry; trim: THREE.BufferGeometry }, mats: { paint: THREE.Material; trim: THREE.Material }, count: number) {
+  readonly lights: THREE.InstancedMesh;
+  constructor(parts: { paint: THREE.BufferGeometry; trim: THREE.BufferGeometry; lights: THREE.BufferGeometry }, mats: { paint: THREE.Material; trim: THREE.Material; lights: THREE.Material }, count: number) {
     this.paint = new THREE.InstancedMesh(parts.paint, mats.paint, count);
     this.trim = new THREE.InstancedMesh(parts.trim, mats.trim, count);
-    for (const m of [this.paint, this.trim]) { m.frustumCulled = false; m.castShadow = true; }
+    this.lights = new THREE.InstancedMesh(parts.lights, mats.lights, count);
+    for (const m of [this.paint, this.trim, this.lights]) { m.frustumCulled = false; m.castShadow = m !== this.lights; }
   }
-  set(i: number, m: THREE.Matrix4, color: THREE.Color) { this.paint.setMatrixAt(i, m); this.trim.setMatrixAt(i, m); this.paint.setColorAt(i, color); }
+  set(i: number, m: THREE.Matrix4, color: THREE.Color) { this.paint.setMatrixAt(i, m); this.trim.setMatrixAt(i, m); this.lights.setMatrixAt(i, m); this.paint.setColorAt(i, color); }
   get count() { return this.paint.count; }
-  set count(n: number) { this.paint.count = n; this.trim.count = n; }
+  set count(n: number) { this.paint.count = n; this.trim.count = n; this.lights.count = n; }
   flush() {
-    for (const m of [this.paint, this.trim]) m.instanceMatrix.needsUpdate = true;
+    for (const m of [this.paint, this.trim, this.lights]) m.instanceMatrix.needsUpdate = true;
     if (this.paint.instanceColor) this.paint.instanceColor.needsUpdate = true;
   }
-  addTo(scene: THREE.Scene) { scene.add(this.paint, this.trim); }
-  removeFrom(scene: THREE.Scene) { scene.remove(this.paint, this.trim); }
-  dispose() { this.paint.dispose(); this.trim.dispose(); }
+  addTo(scene: THREE.Scene) { scene.add(this.paint, this.trim, this.lights); }
+  removeFrom(scene: THREE.Scene) { scene.remove(this.paint, this.trim, this.lights); }
+  dispose() { this.paint.dispose(); this.trim.dispose(); this.lights.dispose(); }
 }
 
 /** Tráfico: coches aparcados fijos (instanciados por tesela) y coches que circulan por la red de OSM. */
@@ -168,7 +171,13 @@ export class Traffic {
   private mats = {
     paint: new THREE.MeshStandardMaterial({ roughness: 0.28, metalness: 0.55 }),
     trim: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.2 }),
+    lights: new THREE.MeshBasicMaterial({ vertexColors: true }),
   };
+  private parkedLights = new THREE.MeshBasicMaterial({ vertexColors: true });
+  private beams: THREE.InstancedMesh;
+  private beamMat: THREE.MeshBasicMaterial;
+  private lightLevel = 0;
+  private signals: Signals | null = null;
   private mesh: CarSet;
   private tmpM = new THREE.Matrix4();
   private tmpQ = new THREE.Quaternion();
@@ -183,6 +192,42 @@ export class Traffic {
     this.mesh = new CarSet(this.geo, this.mats, MAX_AGENTS);
     this.mesh.count = 0;
     this.mesh.addTo(scene);
+    // haces de los faros sobre el asfalto (aditivos, solo de noche y al atardecer)
+    const cv = document.createElement('canvas');
+    cv.width = 64; cv.height = 128;
+    const c2 = cv.getContext('2d')!;
+    const g = c2.createLinearGradient(0, 128, 0, 0);
+    g.addColorStop(0, 'rgba(255,240,200,0.9)'); g.addColorStop(0.5, 'rgba(255,235,190,0.35)'); g.addColorStop(1, 'rgba(255,230,180,0)');
+    c2.fillStyle = g; c2.fillRect(0, 0, 64, 128);
+    const mask = c2.createLinearGradient(0, 0, 64, 0);
+    mask.addColorStop(0, 'rgba(0,0,0,1)'); mask.addColorStop(0.5, 'rgba(0,0,0,0)'); mask.addColorStop(1, 'rgba(0,0,0,1)');
+    c2.globalCompositeOperation = 'destination-out';
+    c2.fillStyle = mask; c2.globalAlpha = 0.85; c2.fillRect(0, 0, 64, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.beamMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    this.beams = new THREE.InstancedMesh(new THREE.PlaneGeometry(3.6, 12).rotateX(-Math.PI / 2).translate(0, 0, 8.5), this.beamMat, MAX_AGENTS);
+    this.beams.frustumCulled = false;
+    this.beams.count = 0;
+    this.beams.renderOrder = 6;
+    scene.add(this.beams);
+    this.parkedLights.color.setScalar(1);
+  }
+
+  setSignals(s: Signals) { this.signals = s; }
+
+  /** ¿Hay algún coche en marcha a menos de r metros de (x, z)? */
+  carWithin(x: number, z: number, r: number): boolean {
+    return this.agents.some((a) => Math.hypot(a.x - x, a.z - z) < r);
+  }
+
+  /** Nivel de luz artificial (0 día, 0,35 atardecer, 1 noche): faros y pilotos de los coches en marcha, haces sobre el asfalto. */
+  setLightLevel(lv: number) {
+    this.lightLevel = lv;
+    this.mats.lights.color.setScalar(1 + 1.8 * lv);
+    this.parkedLights.color.setScalar(1 - 0.85 * lv);
+    this.beamMat.opacity = 0.55 * lv;
+    this.beams.visible = lv > 0;
   }
 
   private pose(m: THREE.Matrix4, x: number, z: number, fx: number, fz: number, kind: number) {
@@ -209,7 +254,7 @@ export class Traffic {
       way.tiles.add(key);
     }
     if (parked.length) {
-      const im = new CarSet(this.geo, this.mats, parked.length);
+      const im = new CarSet(this.geo, { ...this.mats, lights: this.parkedLights }, parked.length);
       parked.forEach(([x, z, yaw, col, kind], i) => {
         this.pose(this.tmpM, x, z, Math.sin(yaw), Math.cos(yaw), kind);
         im.set(i, this.tmpM, this.tmpC.setHex(PAINT[col % PAINT.length]));
@@ -309,7 +354,7 @@ export class Traffic {
     return { ways: this.wayList, ends: this.ends };
   }
 
-  update(dt: number, px: number, pz: number, headingRad: number, playerSpeed: number, density = 1) {
+  update(dt: number, px: number, pz: number, headingRad: number, playerSpeed: number, density = 1, obstacles: { x: number; z: number }[] = []) {
     if (!this.enabled) { this.mesh.count = 0; return; }
     if (this.dirty) this.rebuild();
     const hx = Math.sin(headingRad), hz = -Math.cos(headingRad);
@@ -333,6 +378,17 @@ export class Traffic {
         const rx = px - a.x, rz = pz - a.z, along = rx * a.fx + rz * a.fz;
         if (along > 0 && along < reach + 3 && Math.abs(rx * -a.fz + rz * a.fx) < 1.7) target = Math.min(target, along < 6 ? 0 : Math.max(0, (along - 6) * 0.8));
       }
+      // semáforo del cruce al que llega: rojo = para antes de la línea; ámbar = para si le da tiempo
+      if (this.signals && toEnd < 26) {
+        const end = a.dir > 0 ? a.way.pts[a.way.pts.length - 1] : a.way.pts[0];
+        const st = this.signals.stateAt(end[0], end[1], a.fx, a.fz);
+        if (st && (st.state === 'r' || (st.state === 'a' && toEnd > 5 + a.v * 0.6))) target = Math.min(target, Math.max(0, toEnd - 4.0) * 0.9);
+      }
+      // peatones cruzando por la calzada
+      for (const o of obstacles) {
+        const rx = o.x - a.x, rz = o.z - a.z, along = rx * a.fx + rz * a.fz;
+        if (along > 0 && along < reach + 4 && Math.abs(rx * -a.fz + rz * a.fx) < 2.4) target = Math.min(target, along < 5.5 ? 0 : Math.max(0, (along - 5.5) * 0.7));
+      }
       if (a.hold > 0) { a.hold -= dt; target = 0; }
       a.v += Math.max(-8 * dt, Math.min(3 * dt, target - a.v));
       a.s += a.dir * a.v * dt;
@@ -354,6 +410,17 @@ export class Traffic {
     }
     this.mesh.count = n;
     this.mesh.flush();
+    if (this.lightLevel > 0) {
+      for (let i = 0; i < n; i++) {
+        const a = this.agents[i];
+        const yaw = Math.atan2(a.fx, a.fz);
+        this.tmpQ.setFromAxisAngle(this.tmpV.set(0, 1, 0), yaw);
+        this.tmpM.compose(this.tmpV.set(a.x, heightAt(a.x, a.z) + 0.12, a.z), this.tmpQ, this.tmpS.set(1, 1, 1));
+        this.beams.setMatrixAt(i, this.tmpM);
+      }
+      this.beams.count = n;
+      this.beams.instanceMatrix.needsUpdate = true;
+    }
     void playerSpeed;
   }
 
@@ -390,10 +457,12 @@ export class Traffic {
 
   dispose() {
     this.mesh.removeFrom(this.scene);
+    this.scene.remove(this.beams); this.beams.geometry.dispose(); this.beamMat.dispose(); this.parkedLights.dispose();
     for (const im of this.parked.values()) { im.removeFrom(this.scene); im.dispose(); }
     this.parked.clear();
     this.mesh.dispose();
     this.geo.paint.dispose(); this.geo.trim.dispose();
-    this.mats.paint.dispose(); this.mats.trim.dispose();
+    this.geo.lights.dispose();
+    this.mats.paint.dispose(); this.mats.trim.dispose(); this.mats.lights.dispose();
   }
 }

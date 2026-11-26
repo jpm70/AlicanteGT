@@ -16,6 +16,7 @@ import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
 import { createPalmAssets, type PalmAssets } from './palms';
 import { Traffic, type ParkedRec, type RoadRec } from './traffic';
 import { Pedestrians } from './pedestrians';
+import { Signals } from './signals';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
@@ -69,6 +70,7 @@ export class WorldScene {
   collision: CollisionWorld | null = null;
   readonly traffic: Traffic;
   readonly peds: Pedestrians;
+  readonly signals = new Signals();
 
   private key: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
@@ -104,6 +106,7 @@ export class WorldScene {
   private streets = new Map<string, [string, number[][]][]>();
   private lastStreet = '';
   private pedTest = new URLSearchParams(window.location.search).get('pedtest') === '1';
+  private aerialZoom = Number(new URLSearchParams(window.location.search).get('zoom')) || 1;   // solo pruebas: ?zoom=5 aleja la cámara aérea
   private camClock = 0;
   private camRoll = 0;
   private groundPitch = 0;
@@ -163,7 +166,9 @@ export class WorldScene {
     });
     this.scene.add(this.rig.root);
     this.traffic = new Traffic(this.scene);
-    this.peds = new Pedestrians(this.scene, this.traffic, (x, z) => this.collision?.sidewalk(x, z) ?? true);
+    this.traffic.setSignals(this.signals);
+    this.peds = new Pedestrians(this.scene, this.traffic, (x, z) => this.collision?.sidewalk(x, z) ?? true, this.signals);
+    this.traffic.setLightLevel(this.lampLevel());
     if (new URLSearchParams(window.location.search).get('traffic') === '0') { this.traffic.enabled = false; this.peds.enabled = false; }
     if (new URLSearchParams(window.location.search).get('peds') === '0') this.peds.enabled = false;
     if (new URLSearchParams(window.location.search).get('debug') === '1') (window as unknown as { __gt: WorldScene }).__gt = this;
@@ -203,6 +208,7 @@ export class WorldScene {
     for (const m of this.lampMats) m.emissiveIntensity = 0.6 + 3.4 * lv;
     if (this.poolMat) { this.poolMat.opacity = 0.6 * lv; this.poolMat.visible = lv > 0; }
     if (lv <= 0) for (const l of this.lampLights) l.intensity = 0;
+    this.traffic.setLightLevel(lv);
   }
 
   private updateLampLights(px: number, pz: number) {
@@ -400,6 +406,7 @@ export class WorldScene {
       this.tiles.set(key, lt);
       this.streets.set(key, (col.streets ?? []) as [string, number[][]][]);
       this.traffic.addTile(key, (col.roads ?? []) as RoadRec[], (col.parked ?? []) as ParkedRec[]);
+      this.peds.addCrosswalks(key, (col.cross ?? []) as number[][]);
       this.registerDecks(key, (col.decks ?? []) as { w: number; p: [number, number, number][] }[]);
       this.collision?.addTile(
         key,
@@ -495,6 +502,8 @@ export class WorldScene {
     this.collision?.removeTile(key);
     this.unregisterDecks(key);
     this.streets.delete(key);
+    this.signals.unregister(key);
+    this.peds.removeCrosswalks(key);
     this.traffic.removeTile(key);
     this.tiles.delete(key);
     this.loadedCount = this.tiles.size;
@@ -557,7 +566,7 @@ export class WorldScene {
           }
           ${name === 'Ground' ? `{
             vec3 gn = normalize(cross(dFdx(vWP), dFdy(vWP)));
-            float steep = smoothstep(0.95, 0.72, abs(gn.y));
+            float steep = smoothstep(0.90, 0.66, abs(gn.y));
             float n1 = hs(floor(vOXZ * 0.9)), n2 = hs(floor(vOXZ * 0.23 + vec2(vWP.y * 0.5, 0.0)));
             float strat = hs(vec2(floor(vWP.y * 1.6), 7.0));
             vec3 rock = mix(vec3(0.60, 0.50, 0.36), vec3(0.42, 0.35, 0.27), n2 * 0.6 + strat * 0.4);
@@ -612,10 +621,8 @@ export class WorldScene {
     const sigs = lamps.filter((l) => l[2] === 1);
     const metal = new THREE.MeshStandardMaterial({ color: 0x2c2f34, roughness: 0.6, metalness: 0.5 });
     const glow = new THREE.MeshStandardMaterial({ color: 0xffe2a8, emissive: 0xffd48a, emissiveIntensity: 0.6, roughness: 0.4 });
-    const red = new THREE.MeshStandardMaterial({ color: 0xff3b30, emissive: 0xff2a20, emissiveIntensity: 1.4, roughness: 0.4 });
-    const amb = new THREE.MeshStandardMaterial({ color: 0xffb020, emissive: 0xff9a10, emissiveIntensity: 0.25, roughness: 0.4 });
-    const grn = new THREE.MeshStandardMaterial({ color: 0x35d06a, emissive: 0x1fb050, emissiveIntensity: 0.25, roughness: 0.4 });
-    lt.materials.push(metal, glow, red, amb, grn);
+    const lensMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    lt.materials.push(metal, glow, lensMat);
     this.lampMats.push(glow);
     glow.emissiveIntensity = 0.6 + 3.4 * this.lampLevel();
     lt.lamps = new Float32Array(poles.length * 3);
@@ -648,24 +655,22 @@ export class WorldScene {
     const sp = mk(new THREE.CylinderGeometry(0.07, 0.09, 4.2, 6), metal, sigs.length);
     const sh = mk(new THREE.BoxGeometry(0.3, 0.95, 0.26), metal, sigs.length);
     const lensGeo = new THREE.SphereGeometry(0.09, 8, 6);
-    const lr = mk(lensGeo, red, sigs.length * 2);
-    const la = mk(lensGeo, amb, sigs.length * 2);
-    const lg = mk(lensGeo, grn, sigs.length * 2);
+    const lens = mk(lensGeo, lensMat, sigs.length * 6);                     // 3 lentes x 2 caras por semáforo; el color lo pone Signals
     const off = new THREE.Vector3();
     sigs.forEach(([x, z, , yaw = 0], i) => {
       const y = heightAt(x, z);
       const rot = new THREE.Quaternion().setFromAxisAngle(up, yaw);
       m.compose(new THREE.Vector3(x, y + 2.1, z), q, one); sp.setMatrixAt(i, m);
       m.compose(new THREE.Vector3(x, y + 4.3, z), rot, one); sh.setMatrixAt(i, m);
-      [lr, la, lg].forEach((im, k) => {
-        for (let f = 0; f < 2; f++) {
-          off.set(0, 0.28 - k * 0.28, (f === 0 ? 1 : -1) * 0.14).applyQuaternion(rot);
-          m.compose(new THREE.Vector3(x + off.x, y + 4.3 + off.y, z + off.z), q, one);
-          im.setMatrixAt(i * 2 + f, m);
-        }
-      });
+      for (let k = 0; k < 3; k++) for (let f = 0; f < 2; f++) {
+        off.set(0, 0.28 - k * 0.28, (f === 0 ? 1 : -1) * 0.14).applyQuaternion(rot);
+        m.compose(new THREE.Vector3(x + off.x, y + 4.3 + off.y, z + off.z), q, one);
+        lens.setMatrixAt(i * 6 + f * 3 + k, m);
+      }
     });
-    [pp, ph, sp, sh, lr, la, lg].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+    [pp, ph, sp, sh, lens].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+    this.signals.register(lt.key, sigs.map(([x, z, , yaw = 0]) => [x, z, yaw] as [number, number, number]));
+    this.signals.attachLens(lt.key, lens);
   }
 
   /** Árboles y palmeras instanciados (posiciones reales de OSM + arbolado de calle). */
@@ -946,7 +951,7 @@ export class WorldScene {
     this.rig.root.rotation.x = this.groundPitch;
     this.rig.root.rotation.z = this.groundRoll;
 
-    const cfg = CAM[this.preset];
+    const cfg = this.preset === 'aerial' && this.aerialZoom !== 1 ? { ...CAM.aerial, dist: CAM.aerial.dist * this.aerialZoom, height: CAM.aerial.height * this.aerialZoom } : CAM[this.preset];
     const driver = this.preset === 'driver';
     const lambda = driver ? 14 : state.isDrifting ? 3 : 5.5;
     if (this.camSnap) {
@@ -999,7 +1004,8 @@ export class WorldScene {
     this.rim.position.set(p.x + 14, 9, p.z + 16);
 
     this.updateLampLights(p.x, p.z);
-    this.traffic.update(dt, p.x, p.z, hd, state.speedMps, this.mode === 'night' ? 0.5 : 1);
+    this.signals.update(dt);
+    this.traffic.update(dt, p.x, p.z, hd, state.speedMps, this.mode === 'night' ? 0.5 : 1, this.peds.onRoad());
     if (this.pedTest) { this.pedTest = false; this.peds.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     this.peds.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.4 : this.mode === 'sunset' ? 0.8 : 1);
     this.tickSky(p.x, p.z, dt);

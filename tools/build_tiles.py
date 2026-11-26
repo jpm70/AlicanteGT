@@ -376,6 +376,7 @@ def explanada_palms(mosaic_geoms, x0, z0, x1, z1, total=365):
     return out, lamps_out
 
 
+LM_PIRAMIDE = 266286896      # Edificio La Pirámide (Av. de Dénia): torre escalonada en forma de pirámide
 PARK_DEFAULT = ("tertiary", "residential", "unclassified", "living_street")
 PARK_YES = {"parallel", "diagonal", "perpendicular", "lane", "street_side", "marked", "on_street", "yes", "half_on_kerb", "on_kerb", "painted_area_only"}
 PARK_NO = {"no", "separate", "no_parking", "no_stopping", "no_standing", "loading", "disabled", "none"}
@@ -496,7 +497,7 @@ def street_lamps(road_lines, walk_t, trees, bshapes, bidx, existing, x0, z0, x1,
     return out
 
 
-def road_marks(road_lines, signals, x0, z0, x1, z1):
+def road_marks(road_lines, signals, x0, z0, x1, z1, cw_out=None):
     """Líneas de carril (discontinuas), bordes continuos y pasos de cebra en los semáforos. Devuelve (V, F, C) o None."""
     V, F = [], []
     import bisect
@@ -556,6 +557,7 @@ def road_marks(road_lines, signals, x0, z0, x1, z1):
                 if d < 14 and (best is None or d < best[0]): best = (d, px, pz, dx / math.sqrt(l2), dz / math.sqrt(l2), r["w"])
         if best is None: continue
         _, px, pz, fx, fz, w = best; nx, nz = -fz, fx
+        if cw_out is not None: cw_out.append([round(px, 1), round(pz, 1), round(fx, 3), round(fz, 3), round(w, 1)])
         n = int((w - 1.0) / 0.95)
         for j in range(n):
             lat = -((n - 1) * 0.95) / 2 + j * 0.95
@@ -793,10 +795,11 @@ def build_tile(args):
     wv, wf, wc, wu = [], [], [], []; rv, rf, rc = [], [], []
     nwv = [0]; collid = []; lm_parts = []; castle_parts = []; lm_obst = []; styles = [0, 0, 0, 0]
 
-    def emit_ring(coords, ccw_outward, st, levels_f, col, ytop):
+    def emit_ring(coords, ccw_outward, st, levels_f, col, ytop, ybase=None):
         ring = list(coords); rh_ = hf([c[0] for c in ring], [c[1] for c in ring]); s_acc = 0.0
         for ri, ((xa, za), (xb, zb)) in enumerate(zip(ring[:-1], ring[1:])):
             yb1 = float(rh_[ri]) - 0.4; yb2 = float(rh_[ri + 1]) - 0.4
+            if ybase is not None: yb1 = yb2 = ybase
             L = math.hypot(xb - xa, zb - za)
             if L < 0.05: continue
             u1 = s_acc / BAY + st * 1000; u2 = (s_acc + L) / BAY + st * 1000; s_acc += L
@@ -806,6 +809,44 @@ def build_tile(args):
             wu.extend([[u1, (yb1 - ytop) / FLOOR + levels_f], [u2, (yb2 - ytop) / FLOOR + levels_f], [u2, levels_f], [u1, levels_f]])
             wc.extend([col] * 4)
             wf.extend([[base + i for i in f] for f in tri])
+
+
+    def build_pyramid(poly0, seed):
+        """Edificio La Pirámide: planta a planta, cada piso recorta su huella según un perfil triangular a lo largo del eje largo
+        (cumbre a un 35 % del largo, bajada en escalones); cada escalón deja una terraza."""
+        rect = poly0.minimum_rotated_rectangle; rc = list(rect.exterior.coords)[:4]
+        e1 = (rc[1][0] - rc[0][0], rc[1][1] - rc[0][1]); e2 = (rc[2][0] - rc[1][0], rc[2][1] - rc[1][1])
+        axv = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2
+        Lx = math.hypot(*axv); ux, uz = axv[0] / Lx, axv[1] / Lx; vx, vz = -uz, ux
+        ext0 = list(poly0.exterior.coords)
+        us = [c[0] * ux + c[1] * uz for c in ext0]; vs = [c[0] * vx + c[1] * vz for c in ext0]
+        u0, Lt = min(us), max(us) - min(us); v0, v1 = min(vs) - 5.0, max(vs) + 5.0
+        FMAX, FMIN, AP = 22, 5, 0.35
+        g0 = float(hf([c[0] for c in ext0], [c[1] for c in ext0]).min())
+        col_ = hexrgb(0xe4d0a6); rcol_ = hexrgb(0x9a9c9e)
+        st_ = style_for(16.0, seed)
+        tiers = []
+        for k in range(FMAX):
+            t = max(0.0, (k + 1 - FMIN) / (FMAX - FMIN))
+            ul, ur = AP * Lt * t, AP * Lt + (1 - AP) * Lt * (1 - t)
+            strip = Polygon([(ux * (u0 + a_) + vx * b_, uz * (u0 + a_) + vz * b_) for a_, b_ in ((ul, v0), (ur, v0), (ur, v1), (ul, v1))])
+            tiers.append(poly0.intersection(strip))
+        for k, tk in enumerate(tiers):
+            ytop = g0 + (k + 1) * FLOOR; ybase = None if k == 0 else g0 + k * FLOOR
+            nxt = tiers[k + 1] if k + 1 < FMAX else Polygon()
+            for pc in polys_of(tk):
+                if pc.area < 4: continue
+                emit_ring(list(pc.exterior.coords), pc.exterior.is_ccw, st_, (ytop - g0) / FLOOR, col_, ytop, ybase)
+                for hole in pc.interiors: emit_ring(list(hole.coords), not hole.is_ccw, st_, (ytop - g0) / FLOOR, col_, ytop, ybase)
+                roof_geo = pc.difference(nxt) if not nxt.is_empty else pc
+                for rp in polys_of(roof_geo):
+                    if rp.area < 2: continue
+                    rm = tri_mesh(rp, ytop, rcol_)
+                    if rm is not None:
+                        base = sum(len(a_) for a_ in rv)
+                        rv.append(np.asarray(rm.vertices)); rf.append(np.asarray(rm.faces) + base); rc.append(np.asarray(rm.visual.vertex_colors))
+        styles[st_] += 1
+        collid.append({"id": LM_PIRAMIDE, "h": round(FMAX * FLOOR, 1), "p": [[round(x, 2), round(z, 2)] for x, z in ext0]})
 
     for e in ways(gather(tx, tz, "building")):
         pts = [P(p) for p in e["geometry"]]
@@ -821,6 +862,8 @@ def build_tile(args):
         c0 = poly0.centroid
         if not (x0 <= c0.x < x1 and z0 <= c0.y < z1): continue          # cada edificio se construye en una sola tesela
         if not mosaic.is_empty and mosaic.contains(c0): continue         # no tapar el mosaico de la Explanada
+        if e["id"] == LM_PIRAMIDE:
+            build_pyramid(poly0, int(hashlib.md5(str(e["id"]).encode()).hexdigest()[:6], 16)); continue
         t = e["tags"]; lv = t.get("building:levels")
         is_lm = e["id"] in (LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_SOL) or e["id"] in LM_COL
         pieces = [(poly0, None, None, None)] if is_lm else cat_pieces(poly0)
@@ -997,7 +1040,8 @@ def build_tile(args):
     for nm in ("Deck", "Struct", "Glow"):
         m_ = dk["parts"][nm]
         if m_ is not None: parts.append((nm, m_[0], m_[1], m_[2], None))
-    mk = road_marks(road_lines + dk["marks"], signals, x0, z0, x1, z1)
+    crosswalks = []
+    mk = road_marks(road_lines + dk["marks"], signals, x0, z0, x1, z1, crosswalks)
     if mk is not None: parts.append(("Marks", mk[0], mk[1], mk[2], None))
     cb = curbs(walk_t, roads_t, x0, z0, x1, z1)
     if cb is not None: parts.append(("Curb", cb[0], cb[1], cb[2], None))
@@ -1060,7 +1104,7 @@ def build_tile(args):
         except OSError:
             if _try == 7: raise
             time.sleep(1.5)
-    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst, "parked": parked, "roads": roads_out, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
+    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst, "parked": parked, "roads": roads_out, "cross": crosswalks, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
                "drive": {"x0": x0, "z0": z0, "cell": DC, "nx": n, "nz": n, "bits": bits}, "walk": wbits}, open(f"{OUT}/{name}.json", "w"))
     ortho = 0
     src = f"{D}ortho_t/{name}.jpg"
