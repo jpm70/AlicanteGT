@@ -652,7 +652,7 @@ def build_tile(args):
         if len(pts) < 4: continue
         cxm = sum(p[0] for p in pts) / len(pts); czm = sum(p[1] for p in pts) / len(pts)
         if not (x0 - 60 <= cxm < x1 + 60 and z0 - 60 <= czm < z1 + 60): continue
-        try: poly0 = make_valid(Polygon(pts))
+        try: poly0 = make_valid(Polygon(pts, [[P(q) for q in h] for h in e.get("holes", []) if len(h) >= 4]))
         except Exception: continue
         if isinstance(poly0, MultiPolygon): poly0 = max(poly0.geoms, key=lambda g: g.area)
         if not isinstance(poly0, Polygon) or poly0.area < 6: continue
