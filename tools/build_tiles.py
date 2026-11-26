@@ -17,7 +17,8 @@ from shapely.ops import unary_union
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from world_config import *          # LAT0, LNG0, KLAT, KLNG, TILE, X0.., tiles(), tile_box(), ortho_px()
-from world_lib import *             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
+from world_lib import *
+from world_decks import build_decks             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
 
 D = "tools/data/"
 OUT = "public/world/tiles"
@@ -254,9 +255,10 @@ def build_sea():
 NON_PALM = ("ficus", "ulmus", "platanus", "pinus", "grevillea", "jacaranda", "olea", "citrus", "cupressus", "tipuana", "quercus", "morus", "celtis", "melia", "brachychiton", "washingtonia_x")
 
 
-def furniture_positions(x, z, is_signal, road_lines):
-    """En OSM los semáforos y algunas farolas están sobre el eje de la calzada: se llevan a la acera.
-    Semáforo: uno a cada lado de la vía. Farola: un solo lado. Devuelve [(x, z, yaw)]; yaw alinea el eje z local con la vía."""
+def furniture_positions(x, z, is_signal, road_lines, roads):
+    """En OSM los semáforos y algunas farolas están sobre la calzada (a veces entre dos carriles o en un cruce):
+    se llevan a la acera caminando en perpendicular a la vía hasta salir del asfalto. Semáforo: uno a cada lado; farola: el lado más cercano.
+    Devuelve [(x, z, yaw)]; yaw alinea el eje z local con la vía."""
     best = None
     for r in road_lines:
         pts = r["p"]
@@ -268,10 +270,22 @@ def furniture_positions(x, z, is_signal, road_lines):
     if best is None: return [(x, z, 0.0)]
     d, px, pz, fx, fz, w = best
     yaw = math.atan2(fx, fz)
-    if d > w / 2 + 0.4: return [(x, z, yaw)]          # ya está fuera de la calzada
-    nx, nz = -fz, fx; off = w / 2 + 0.9
-    out = [(px + nx * off * sd, pz + nz * off * sd, yaw) for sd in (1, -1)]
-    return out if is_signal else out[:1]
+    if roads is None or roads.is_empty or not roads.contains(Point(x, z)): return [(x, z, yaw)]
+    nx, nz = -fz, fx
+    outs = []
+    for sd in (1, -1):
+        t = 0.25; found = False
+        while t < 40:
+            if not roads.contains(Point(x + nx * sd * t, z + nz * sd * t)): found = True; break
+            t += 0.5
+        if not found: continue
+        for ext in (0.9, 1.3, 1.8, 2.5, 3.5):        # primer punto de acera libre: en un cruce el primero puede caer en la calle transversal
+            qx, qz = x + nx * sd * (t + ext), z + nz * sd * (t + ext)
+            if not roads.contains(Point(qx, qz)): outs.append((t, qx, qz)); break
+    if not outs: return []                            # sin sitio en la acera: se descarta antes que dejarlo en el carril
+    outs.sort()
+    if not is_signal: outs = outs[:1]
+    return [(a_, b_, yaw) for (_, a_, b_) in outs]
 
 
 def tree_kind(tags, x, z):
@@ -322,20 +336,26 @@ def street_trees(road_lines, walk_t, existing, bshapes, bidx, x0, z0, x1, z1):
 def road_marks(road_lines, signals, x0, z0, x1, z1):
     """Líneas de carril (discontinuas), bordes continuos y pasos de cebra en los semáforos. Devuelve (V, F, C) o None."""
     V, F = [], []
-    def hfy(x, z): return float(hf(x, z)) + 0.05
-    def quad(p0, p1, p2, p3):
-        pts = [np.array([p[0], hfy(p[0], p[1]), p[1]]) for p in (p0, p1, p2, p3)]
+    import bisect
+    def off_at(r, sdist):
+        o_ = r.get("o")
+        if o_ is None: return 0.0
+        cum = r["cum"]; j = min(max(bisect.bisect_right(cum, sdist) - 1, 0), len(cum) - 2)
+        seg = (cum[j + 1] - cum[j]) or 1e-9; t_ = (sdist - cum[j]) / seg
+        return o_[j] + (o_[j + 1] - o_[j]) * t_
+    def quad(p0, p1, p2, p3, offs=(0.0, 0.0, 0.0, 0.0)):
+        pts = [np.array([p[0], float(hf(p[0], p[1])) + 0.05 + offs[i_], p[1]]) for i_, p in enumerate((p0, p1, p2, p3))]
         n = np.cross(pts[1] - pts[0], pts[3] - pts[0])
         if n[1] < 0: pts = [pts[0], pts[3], pts[2], pts[1]]
         b = len(V) * 1; base = sum(1 for _ in V)
         for q in pts: V.append(q)
         F.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]])
-    def strip(ax, az, bx, bz, off, hw):
+    def strip(ax, az, bx, bz, off, hw, o0=0.0, o1=0.0):
         L = math.hypot(bx - ax, bz - az)
         if L < 0.05: return
         fx, fz = (bx - ax) / L, (bz - az) / L; nx, nz = -fz, fx
         quad((ax + nx * (off - hw), az + nz * (off - hw)), (ax + nx * (off + hw), az + nz * (off + hw)),
-             (bx + nx * (off + hw), bz + nz * (off + hw)), (bx + nx * (off - hw), bz + nz * (off - hw)))
+             (bx + nx * (off + hw), bz + nz * (off + hw)), (bx + nx * (off - hw), bz + nz * (off - hw)), (o0, o0, o1, o1))
     for r in road_lines:
         k, w, pts = r["k"], r["w"], r["p"]
         if k not in ("primary", "secondary", "tertiary", "residential", "unclassified") or w < 5.5: continue
@@ -352,10 +372,11 @@ def road_marks(road_lines, signals, x0, z0, x1, z1):
                 mxp, mzp = ax + fx * (t + t2) / 2, az + fz * (t + t2) / 2
                 if x0 <= mxp < x1 and z0 <= mzp < z1 and sa > 9 and sb < total - 9:
                     p0 = (ax + fx * t, az + fz * t); p1 = (ax + fx * t2, az + fz * t2)
-                    if not r["ow"] and (sa % 7.5) < 2.5: strip(p0[0], p0[1], p1[0], p1[1], 0.0, 0.07)          # eje discontinuo
-                    if r["ow"] and r["ln"] >= 2 and (sa % 7.5) < 2.5: strip(p0[0], p0[1], p1[0], p1[1], 0.0, 0.07)
+                    oa, ob = off_at(r, sa), off_at(r, sb)
+                    if not r["ow"] and (sa % 7.5) < 2.5: strip(p0[0], p0[1], p1[0], p1[1], 0.0, 0.07, oa, ob)          # eje discontinuo
+                    if r["ow"] and r["ln"] >= 2 and (sa % 7.5) < 2.5: strip(p0[0], p0[1], p1[0], p1[1], 0.0, 0.07, oa, ob)
                     if k in ("primary", "secondary", "tertiary"):                                                # bordes continuos
-                        for sd in (1, -1): strip(p0[0], p0[1], p1[0], p1[1], sd * (w / 2 - 0.35), 0.06)
+                        for sd in (1, -1): strip(p0[0], p0[1], p1[0], p1[1], sd * (w / 2 - 0.35), 0.06, oa, ob)
                 t = t2
             dist += L
     # pasos de cebra en semáforos
@@ -429,6 +450,7 @@ def build_tile(args):
     # --- calzadas, aceras, plazas y mosaico ---
     hw = ways(gather(tx, tz, "highway"))
     road_geoms, walk_geoms, road_lines, plaza_geoms, mosaic_geoms = [], [], [], [], []
+    deck_ways = []
     for e in hw:
         t = e["tags"]; k = t.get("highway"); pts = [P(p) for p in e["geometry"]]
         if not near(pts): continue
@@ -438,10 +460,21 @@ def build_tile(args):
                 except Exception: continue
                 (mosaic_geoms if "esplanada" in t.get("name", "").lower() else plaza_geoms).append(g)
             continue
-        if t.get("tunnel") in ("yes", "building_passage"): continue
+        if t.get("tunnel") == "building_passage": continue
+        br = t.get("bridge") not in (None, "", "no"); tu = t.get("tunnel") == "yes"
+        if tu and k not in ROAD_W: continue
         if k in ROAD_W:
             w = float(str(t.get("width", "0")).split()[0] or 0) if str(t.get("width", "")).replace(".", "").isdigit() else 0
             if not w: w = max(ROAD_W[k], int(t["lanes"]) * 3.2 if str(t.get("lanes", "")).isdigit() else 0)
+            if br or tu:
+                Ltot = sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+                if Ltot >= 30:
+                    try: lay = int(t.get("layer", "1" if br else "-1"))
+                    except Exception: lay = 1 if br else -1
+                    deck_ways.append({"id": e["id"], "k": k, "w": w, "pts": pts, "kind": "bridge" if br else "tunnel", "layer": lay if br else -1,
+                                      "ow": t.get("oneway") in ("yes", "1", "true", "-1"), "ln": int(t["lanes"]) if str(t.get("lanes", "")).isdigit() else 0})
+                    continue
+                if tu: continue
             road_geoms.append(LineString(pts).buffer(w / 2, cap_style=2, join_style=1))
             road_lines.append({"k": k, "w": w, "ow": t.get("oneway") in ("yes", "1", "true", "-1"), "ln": int(t["lanes"]) if str(t.get("lanes", "")).isdigit() else 0,
                                "p": [[round(x, 2), round(z, 2)] for x, z in pts]})
@@ -452,6 +485,9 @@ def build_tile(args):
     sidew = unary_union([g.buffer(1.8) for g in road_geoms]).difference(roads) if road_geoms else Polygon()
     mosaic = unary_union(mosaic_geoms).buffer(25).buffer(-25).difference(roads) if mosaic_geoms else Polygon()   # cierra el hueco del edificio quitado
     walk = unary_union([walk, sidew] + plaza_geoms).difference(mosaic)
+    dk = build_decks(deck_ways, hf, (x0, z0, x1, z1), roads)
+    if dk["hole"] is not None:                       # trincheras de túnel: se abre el suelo
+        roads = roads.difference(dk["hole"]); walk = walk.difference(dk["hole"]); mosaic = mosaic.difference(dk["hole"])
 
     # --- mar, muelles, parques ---
     sea = G["SEA"].intersection(tbox)
@@ -471,6 +507,7 @@ def build_tile(args):
     sea_free = sea.difference(piers.buffer(0.2)) if not sea.is_empty else sea
     parks = unary_union(park_geoms).difference(roads).difference(sea_free) if park_geoms else Polygon()
     land = tbox.difference(G["SEA"]); land = unary_union([land, piers.intersection(tbox)])
+    if dk["hole"] is not None: land = land.difference(dk["hole"]); parks = parks.difference(dk["hole"])
     roads_t = roads.intersection(tbox).difference(sea_free)
     walk_t = walk.intersection(tbox).difference(sea_free)
     mosaic_t = mosaic.intersection(tbox).difference(sea_free)
@@ -478,6 +515,8 @@ def build_tile(args):
 
     # --- árboles y farolas ---
     trees, lamps, signals = [], [], []
+    shapely.prepare(roads)
+    roads_pad = roads.buffer(0.7); shapely.prepare(roads_pad)     # los nodos de cruce caen justo en el borde de las vías: se ensancha para detectarlos
     for e in gather(tx, tz, "nodes"):
         if e.get("type") != "node": continue
         x, z = P(e)
@@ -487,7 +526,7 @@ def build_tile(args):
             trees.append([round(x, 2), round(z, 2), tree_kind(t, x, z)])
         else:
             is_sig = t.get("highway") == "traffic_signals"
-            for (fx_, fz_, yaw_) in furniture_positions(x, z, is_sig, road_lines):
+            for (fx_, fz_, yaw_) in furniture_positions(x, z, is_sig, road_lines, roads_pad):
                 lamps.append([round(fx_, 2), round(fz_, 2), 1 if is_sig else 0, round(yaw_, 3)])
             if is_sig: signals.append((x, z))
 
@@ -605,7 +644,10 @@ def build_tile(args):
             dx, dz = x - cx0, z - cz0
             return np.column_stack([(dx * ax[0] + dz * ax[1]) / 9.0, (dx * pr[0] + dz * pr[1]) / 9.0])
         add("Mosaic", mosaic_t, 0.05, hexrgb(0xffffff), uvfn=muv)
-    mk = road_marks(road_lines, signals, x0, z0, x1, z1)
+    for nm in ("Deck", "Struct", "Glow"):
+        m_ = dk["parts"][nm]
+        if m_ is not None: parts.append((nm, m_[0], m_[1], m_[2], None))
+    mk = road_marks(road_lines + dk["marks"], signals, x0, z0, x1, z1)
     if mk is not None: parts.append(("Marks", mk[0], mk[1], mk[2], None))
     cb = curbs(walk_t, roads_t, x0, z0, x1, z1)
     if cb is not None: parts.append(("Curb", cb[0], cb[1], cb[2], None))
@@ -621,7 +663,8 @@ def build_tile(args):
 
     # --- superficie transitable (bits a 2 m) ---
     DC = 2.0; n = int(TILE / DC)
-    drive_geom = unary_union([roads_t, walk_t, mosaic_t]).buffer(0.5).difference(sea_free) if not (roads_t.is_empty and walk_t.is_empty and mosaic_t.is_empty) else Polygon()
+    _dp = [g_ for g_ in (roads_t, walk_t, mosaic_t, (dk["drive"].intersection(tbox) if dk["drive"] is not None else None)) if g_ is not None and not g_.is_empty]
+    drive_geom = unary_union(_dp).buffer(0.5).difference(sea_free) if _dp else Polygon()
     gxs = x0 + (np.arange(n) + 0.5) * DC; gzs = z0 + (np.arange(n) + 0.5) * DC
     GX, GZ = np.meshgrid(gxs, gzs)
     if drive_geom.is_empty: okmask = np.zeros((n, n), dtype=bool)
@@ -644,7 +687,7 @@ def build_tile(args):
     name = f"{tx}_{tz}"
     has_content = bool(wv or not roads_t.is_empty or not parks_t.is_empty or not land.is_empty)
     write_glb(f"{OUT}/{name}.glb", parts)
-    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst, "trees": trees, "lamps": lamps,
+    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"], "trees": trees, "lamps": lamps, "decks": dk["decks"],
                "drive": {"x0": x0, "z0": z0, "cell": DC, "nx": n, "nz": n, "bits": bits}}, open(f"{OUT}/{name}.json", "w"))
     ortho = 0
     src = f"{D}ortho_t/{name}.jpg"

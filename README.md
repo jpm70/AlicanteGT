@@ -13,6 +13,7 @@ No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generad
 - **Relieve real** (EU-DEM 25 m): la subida al Benacantil, el barrio de Santa Cruz en ladera. Coche y cámara siguen la pendiente.
 - **Mar, costa, muelles, parques**, 738 árboles (62 palmeras *Phoenix canariensis*), farolas y semáforos de OSM.
 - **Hitos**: Castillo de Santa Bárbara (murallas con almenas, torres y torre del Homenaje), **mosaico ondulado de la Explanada**, Ayuntamiento con torres, Concatedral de San Nicolás, Basílica de Santa María, Mercado Central (cúpula con linterna, torres de esquina y portada), Auditorio La Concha, la **fuente con estatua de la Plaza de los Luceros**, la Fuente de la Aguadora y el barrio de Santa Cruz en blanco y pastel.
+- **Túneles y puentes** (OSM `tunnel=yes` / `bridge=*`): las vías bajan con rampas del 10 % a trincheras con muros y tramos cubiertos con techo y luminarias (túneles de la Av. de Dénia), o suben a puentes con tablero, pretiles y pilares (Av. Doctor Jiménez). El coche sube y baja por ellos y puede pasar por debajo de un puente.
 - **Física y límites**: colisión con edificios, mar y troncos, y **límite de calzada** (el coche solo circula por calzada, aceras, plazas y la Explanada).
 
 ## Coche, cámaras y ambientes
@@ -21,7 +22,7 @@ No usa mapas en línea ni API keys: el mundo es un archivo `.glb` propio generad
 - 3 cámaras: **Persecución**, **Modo Conductor** (cockpit interactivo) y **Aérea**.
 - 3 ambientes: **Atardecer Mediterráneo**, **Noche Neón** y **Día**.
 - Motor y derrape sintetizados con Web Audio (sin archivos de audio).
-- 13 puntos de salida: Explanada, Castillo, Ayuntamiento, Mercado Central, Santa Cruz, Luceros, Concatedral, Santa María, Estación Terminal, Auditorio ADDA, Puerto, Postiguet y Alfonso X (más Puerto, Postiguet y Alfonso X).
+- 15 puntos de salida: Explanada, Castillo, Ayuntamiento, Mercado Central, Santa Cruz, Luceros, Concatedral, Santa María, Estación Terminal, Auditorio ADDA, Túnel de Dénia, Puente del Dr. Jiménez, Puerto, Postiguet y Alfonso X (más Puerto, Postiguet y Alfonso X).
 
 ## Controles
 
@@ -64,7 +65,7 @@ python tools/build_tiles.py 0,-1     # (opcional) reconstruye solo una tesela
 
 ```text
 .
-├── tools/                      # Generación del mundo (Python)
+├── tools/                      # Generación del mundo (Python); world_decks.py = túneles y puentes
 ├── public/world/               # manifest.json, dem.json y tiles/ (glb + json + jpg)
 └── src/
     ├── App.tsx                 # Bucle de juego, entrada y HUD
