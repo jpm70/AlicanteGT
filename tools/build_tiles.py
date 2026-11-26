@@ -343,6 +343,76 @@ def street_trees(road_lines, walk_t, existing, bshapes, bidx, x0, z0, x1, z1):
     return out
 
 
+def explanada_palms(mosaic_geoms, x0, z0, x1, z1, total=365):
+    """La Explanada de España tiene 365 palmeras (una por día del año) en filas a ambos lados del paseo, junto al mosaico.
+    Se reparten a lo largo de los dos bordes largos del paseo, a 2 m hacia dentro. Devuelve [[x, z, 1]] de las que caen en la tesela."""
+    if not mosaic_geoms: return [], []
+    big = max(polys_of(unary_union(mosaic_geoms)), key=lambda g: g.area)
+    rect = big.minimum_rotated_rectangle
+    rc = list(rect.exterior.coords)[:4]
+    e1 = (rc[1][0] - rc[0][0], rc[1][1] - rc[0][1]); e2 = (rc[2][0] - rc[1][0], rc[2][1] - rc[1][1])
+    ax = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2
+    Lx = math.hypot(*ax); ux, uz = ax[0] / Lx, ax[1] / Lx
+    c = rect.centroid
+    inner = big.buffer(-2.0)
+    if inner.is_empty: return [], []
+    ring = max(polys_of(inner), key=lambda g: g.area).exterior
+    ring2 = max(polys_of(big.buffer(-4.2)), key=lambda g: g.area).exterior if not big.buffer(-4.2).is_empty else None
+    side = max(Lx - 10.0, 10.0)                                    # sin las cabeceras del paseo
+    step = 2.0 * side / total
+    out = []; d = 0.0
+    while d < ring.length:
+        p = ring.interpolate(d); d += step
+        if abs((p.x - c.x) * ux + (p.y - c.y) * uz) > Lx / 2 - 5.0: continue
+        if x0 <= p.x < x1 and z0 <= p.y < z1: out.append([round(p.x, 2), round(p.y, 2), 1])
+    lamps_out = []                                                  # farolas de globo entre las palmeras, cada ~14 m a cada lado
+    if ring2 is not None:
+        d = 7.0
+        while d < ring2.length:
+            p = ring2.interpolate(d); d += 14.0
+            if abs((p.x - c.x) * ux + (p.y - c.y) * uz) > Lx / 2 - 8.0: continue
+            if x0 <= p.x < x1 and z0 <= p.y < z1: lamps_out.append([round(p.x, 2), round(p.y, 2), 0, round(math.atan2(ux, uz), 3)])
+    return out, lamps_out
+
+
+def street_lamps(road_lines, walk_t, trees, bshapes, bidx, existing, x0, z0, x1, z1):
+    """Farolas de calle (OSM casi no las tiene mapeadas): cada ~30 m sobre la acera, alternando lados en calles estrechas y a ambos lados en las anchas.
+    Lejos de fachadas, árboles y otras farolas. Devuelve [[x, z, 0, yaw]]."""
+    out = []
+    taken = [(a, b) for a, b, *_ in existing] + [(a, b) for a, b, _ in trees]
+    cell = {}
+    for a, b in taken: cell.setdefault((int(a // 10), int(b // 10)), []).append((a, b))
+    def free(x, z, d2):
+        for i in range(int(x // 10) - 1, int(x // 10) + 2):
+            for j in range(int(z // 10) - 1, int(z // 10) + 2):
+                for a, b in cell.get((i, j), []):
+                    if (a - x) ** 2 + (b - z) ** 2 < d2: return False
+        return True
+    for r in road_lines:
+        if r["k"] not in ("primary", "secondary", "tertiary", "residential", "unclassified", "living_street", "trunk"): continue
+        pts = r["p"]; side_off = r["w"] / 2 + 0.7
+        both = r["w"] >= 9
+        dist = 0.0; nxt = 8.0 + (int(abs(pts[0][0] * 3 + pts[0][1])) % 9); k = 0
+        for i in range(len(pts) - 1):
+            ax, az = pts[i]; bx, bz = pts[i + 1]; L = math.hypot(bx - ax, bz - az)
+            if L < 0.01: continue
+            fx, fz = (bx - ax) / L, (bz - az) / L
+            while nxt <= dist + L:
+                t = nxt - dist; cx, cz = ax + fx * t, az + fz * t
+                sides = (1, -1) if both else ((1,) if k % 2 == 0 else (-1,))
+                for sd in sides:
+                    px, pz = cx + (-fz) * side_off * sd, cz + fx * side_off * sd
+                    if not (x0 <= px < x1 and z0 <= pz < z1): continue
+                    if not free(px, pz, 36): continue
+                    pt = Point(px, pz)
+                    if not walk_t.contains(pt): continue
+                    if any(bshapes[j].distance(pt) < 1.4 for j in bidx.query(pt.buffer(1.4))): continue
+                    out.append([round(px, 2), round(pz, 2), 0, round(math.atan2(fx, fz), 3)]); cell.setdefault((int(px // 10), int(pz // 10)), []).append((px, pz))
+                k += 1; nxt += 30.0
+            dist += L
+    return out
+
+
 def road_marks(road_lines, signals, x0, z0, x1, z1):
     """Líneas de carril (discontinuas), bordes continuos y pasos de cebra en los semáforos. Devuelve (V, F, C) o None."""
     V, F = [], []
@@ -486,6 +556,7 @@ def build_tile(args):
         if k in ROAD_W:
             w = float(str(t.get("width", "0")).split()[0] or 0) if str(t.get("width", "")).replace(".", "").isdigit() else 0
             if not w: w = max(ROAD_W[k], int(t["lanes"]) * 3.2 if str(t.get("lanes", "")).isdigit() else 0)
+            if tu and (k in ("service", "track") or w <= 5.0 or t.get("service") in ("parking_aisle", "driveway", "parking")): continue   # rampas de garaje/parking subterráneo: no se construyen ni se conducen
             if br or tu:
                 Ltot = sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
                 if Ltot >= 30:
@@ -711,10 +782,13 @@ def build_tile(args):
             collid.append({"id": e["id"], "h": round(h, 1), "p": [[round(x, 2), round(z, 2)] for x, z in poly.exterior.coords]})
 
     # --- arbolado de calle y obstáculos de árboles ---
+    _pl, _lp = explanada_palms(mosaic_geoms, x0, z0, x1, z1)
+    trees += _pl; lamps += _lp
     bshapes = [Polygon(b["p"]).buffer(0) for b in collid if len(b["p"]) >= 4]
     bidx = STRtree(bshapes) if bshapes else None
     if bidx is not None:
         trees += street_trees(road_lines, walk_t, trees, bshapes, bidx, x0, z0, x1, z1)
+        lamps += street_lamps(road_lines, walk_t, trees, bshapes, bidx, lamps, x0, z0, x1, z1)
     tree_obst = [{"id": 0, "h": 4, "p": [[round(x + 0.4 * math.cos(a * math.pi / 4), 2), round(z + 0.4 * math.sin(a * math.pi / 4), 2)] for a in range(9)]} for x, z, _ in trees]
 
     # --- fuentes con estatua ---
@@ -749,7 +823,7 @@ def build_tile(args):
         cx0, cz0 = mrr.centroid.x, mrr.centroid.y
         def muv(x, z):
             dx, dz = x - cx0, z - cz0
-            return np.column_stack([(dx * ax[0] + dz * ax[1]) / 9.0, (dx * pr[0] + dz * pr[1]) / 9.0])
+            return np.column_stack([(dx * pr[0] + dz * pr[1]) / 9.0, (dx * ax[0] + dz * ax[1]) / 9.0])   # franjas de lado a lado del paseo, como en la real
         add("Mosaic", mosaic_t, 0.05, hexrgb(0xffffff), uvfn=muv)
     for nm in ("Deck", "Struct", "Glow"):
         m_ = dk["parts"][nm]
