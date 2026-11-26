@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -42,7 +43,7 @@ const GRADE = {
 /** Bloom y ambiente por atmósfera. */
 const FX: Record<AtmosphereMode, { bloom: number; thr: number; ao: number; vig: number }> = {
   sunset: { bloom: 0.26, thr: 0.9, ao: 0.9, vig: 0.3 },
-  night: { bloom: 0.6, thr: 0.62, ao: 0.8, vig: 0.38 },
+  night: { bloom: 0.32, thr: 0.95, ao: 0.8, vig: 0.34 },
   day: { bloom: 0.1, thr: 1.05, ao: 1.0, vig: 0.22 },
 };
 
@@ -55,7 +56,7 @@ const CAM: Record<CameraPreset, { dist: number; height: number; look: number; fo
 interface TileInfo { tx: number; tz: number; ortho: number; land: boolean; signs?: number }
 interface Manifest { tile: number; tx: [number, number]; tz: [number, number]; tiles: TileInfo[] }
 interface DeckSeg { tile: string; ax: number; az: number; ao: number; bx: number; bz: number; bo: number; hw: number }
-interface LoadedTile { key: string; group: THREE.Group; textures: THREE.Texture[]; materials: THREE.Material[] }
+interface LoadedTile { key: string; group: THREE.Group; textures: THREE.Texture[]; materials: THREE.Material[]; lamps?: Float32Array }
 
 /** Escena Three.js propia: mundo por teselas .glb de Alicante + coche + cámara + colisiones. Sin MapLibre. */
 export class WorldScene {
@@ -94,7 +95,7 @@ export class WorldScene {
   private clouds: { sprite: THREE.Sprite; ox: number; oz: number; alt: number; seed: number }[] = [];
   private sunSprite: THREE.Sprite | null = null;
   private skyTime = 0;
-  private loader = new GLTFLoader();
+  private loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   public loadedCount = 0;
   private streets = new Map<string, [string, number[][]][]>();
   private lastStreet = '';
@@ -107,6 +108,9 @@ export class WorldScene {
   private ro: ResizeObserver;
   private mode: AtmosphereMode;
   private envTarget: THREE.WebGLRenderTarget | null = null;
+  private lampMats: THREE.MeshStandardMaterial[] = [];
+  private poolMat: THREE.MeshBasicMaterial | null = null;
+  private lampLights: THREE.PointLight[] = [];
   private pmrem: THREE.PMREMGenerator | null = null;
   private composer: EffectComposer | null = null;
   private bloom: UnrealBloomPass | null = null;
@@ -162,6 +166,61 @@ export class WorldScene {
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(container);
     this.resize();
+  }
+
+  /** Cuánto lucen las farolas según la atmósfera: noche 1, atardecer 0,35, día 0. */
+  private lampLevel(): number {
+    return this.mode === 'night' ? 1 : this.mode === 'sunset' ? 0.35 : 0;
+  }
+
+  private getPoolMat(): THREE.MeshBasicMaterial {
+    if (this.poolMat) return this.poolMat;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 128;
+    const c = cv.getContext('2d')!;
+    const g = c.createRadialGradient(64, 64, 2, 64, 64, 62);
+    g.addColorStop(0, 'rgba(255,200,120,0.95)'); g.addColorStop(0.35, 'rgba(255,170,90,0.45)'); g.addColorStop(1, 'rgba(255,150,70,0)');
+    c.fillStyle = g; c.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.poolMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.6 * this.lampLevel(), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    return this.poolMat;
+  }
+
+  /** Apaga/enciende las farolas al cambiar de atmósfera y reparte unas pocas luces reales entre las más cercanas al coche. */
+  private applyLamps() {
+    const lv = this.lampLevel();
+    for (const m of this.lampMats) m.emissiveIntensity = 0.6 + 3.4 * lv;
+    if (this.poolMat) { this.poolMat.opacity = 0.6 * lv; this.poolMat.visible = lv > 0; }
+    if (lv <= 0) for (const l of this.lampLights) l.intensity = 0;
+  }
+
+  private updateLampLights(px: number, pz: number) {
+    const lv = this.lampLevel();
+    if (lv <= 0) return;
+    if (!this.lampLights.length) {
+      for (let i = 0; i < 6; i++) {
+        const l = new THREE.PointLight(0xffc27a, 0, 26, 1.6);
+        this.scene.add(l); this.lampLights.push(l);
+      }
+    }
+    const best: { d: number; x: number; y: number; z: number }[] = [];
+    for (const lt of this.tiles.values()) {
+      const a = lt.lamps; if (!a) continue;
+      for (let i = 0; i < a.length; i += 3) {
+        const dx = a[i] - px, dz = a[i + 2] - pz, d = dx * dx + dz * dz;
+        if (d > 900) continue;
+        if (best.length < 6) best.push({ d, x: a[i], y: a[i + 1], z: a[i + 2] });
+        else {
+          let wi = 0; for (let k = 1; k < 6; k++) if (best[k].d > best[wi].d) wi = k;
+          if (d < best[wi].d) best[wi] = { d, x: a[i], y: a[i + 1], z: a[i + 2] };
+        }
+      }
+    }
+    this.lampLights.forEach((l, i) => {
+      const b = best[i];
+      if (b) { l.position.set(b.x, b.y, b.z); l.intensity = 38 * lv; } else l.intensity = 0;
+    });
   }
 
   /** Postproceso: oclusión ambiental (GTAO), bloom, tonemapping y realce final. fx=0 en la URL lo desactiva. */
@@ -346,6 +405,7 @@ export class WorldScene {
   private registerDecks(key: string, decks: { w: number; p: [number, number, number][] }[]) {
     const C = 30;
     for (const d of decks) {
+      if (d.w <= 5 && d.p.some((q) => q[2] < -0.5)) continue;   // rampas de garaje/parking: el coche no baja por ellas
       for (let i = 0; i < d.p.length - 1; i++) {
         const [ax, az, ao] = d.p[i], [bx, bz, bo] = d.p[i + 1];
         const seg: DeckSeg = { tile: key, ax, az, ao, bx, bz, bo, hw: d.w / 2 + 0.3 };
@@ -527,7 +587,7 @@ export class WorldScene {
           float win = textureGrad(uMask, auv, gx, gy).r;
           diffuseColor *= vec4(fac.rgb, 1.0);
           float lit = step(0.55, h21(floor(cuv) + vec2(stl * 7.0, 3.0)));
-          totalEmissiveRadiance += win * lit * uNight * vec3(1.0, 0.74, 0.4) * 1.4;
+          totalEmissiveRadiance += win * lit * uNight * vec3(1.0, 0.74, 0.4) * 0.8;
         `);
     };
     return mat;
@@ -543,6 +603,10 @@ export class WorldScene {
     const amb = new THREE.MeshStandardMaterial({ color: 0xffb020, emissive: 0xff9a10, emissiveIntensity: 0.25, roughness: 0.4 });
     const grn = new THREE.MeshStandardMaterial({ color: 0x35d06a, emissive: 0x1fb050, emissiveIntensity: 0.25, roughness: 0.4 });
     lt.materials.push(metal, glow, red, amb, grn);
+    this.lampMats.push(glow);
+    glow.emissiveIntensity = 0.6 + 3.4 * this.lampLevel();
+    lt.lamps = new Float32Array(poles.length * 3);
+    poles.forEach(([x, z], i) => { lt.lamps![i * 3] = x; lt.lamps![i * 3 + 1] = heightAt(x, z) + 5.8; lt.lamps![i * 3 + 2] = z; });
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const one = new THREE.Vector3(1, 1, 1);
@@ -560,6 +624,13 @@ export class WorldScene {
       m.compose(new THREE.Vector3(x, y + 3, z), q, one); pp.setMatrixAt(i, m);
       m.compose(new THREE.Vector3(x, y + 6.1, z), q, one); ph.setMatrixAt(i, m);
     });
+    // charco de luz en el suelo bajo cada farola (aditivo; solo se nota de noche y al atardecer)
+    const pool = mk(new THREE.PlaneGeometry(15, 15).rotateX(-Math.PI / 2), this.getPoolMat(), poles.length);
+    pool.renderOrder = 5;
+    poles.forEach(([x, z], i) => {
+      m.compose(new THREE.Vector3(x, heightAt(x, z) + 0.09, z), q, one); pool.setMatrixAt(i, m);
+    });
+    pool.instanceMatrix.needsUpdate = true;
     // semáforo: mástil, cabezal con tres luces por las dos caras
     const sp = mk(new THREE.CylinderGeometry(0.07, 0.09, 4.2, 6), metal, sigs.length);
     const sh = mk(new THREE.BoxGeometry(0.3, 0.95, 0.26), metal, sigs.length);
@@ -786,7 +857,7 @@ export class WorldScene {
 
   private applySky() {
     const s = SKY[this.mode];
-    this.scene.environmentIntensity = this.mode === 'night' ? 0.1 : this.mode === 'sunset' ? 0.55 : 0.9;
+    this.scene.environmentIntensity = this.mode === 'night' ? 0.4 : this.mode === 'sunset' ? 0.55 : 0.9;
     this.scene.background = null;
     this.updateSky();
     this.fog.color.setHex(s.fog);
@@ -809,6 +880,7 @@ export class WorldScene {
     this.rig.setAtmosphere(mode);
     this.wallUniforms.uNight.value = mode === 'night' ? 1 : mode === 'sunset' ? 0.3 : 0;
     this.applySky();
+    this.applyLamps();
   }
 
   setPaint(p: CarPaintPreset) {
@@ -913,6 +985,7 @@ export class WorldScene {
     this.key.target.position.set(p.x, gy, p.z);
     this.rim.position.set(p.x + 14, 9, p.z + 16);
 
+    this.updateLampLights(p.x, p.z);
     this.tickSky(p.x, p.z, dt);
     if (this.composer) this.composer.render(dt);
     else this.renderer.render(this.scene, this.camera);

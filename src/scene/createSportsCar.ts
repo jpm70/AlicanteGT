@@ -558,7 +558,7 @@ export function createSportsCar(
 
     const hl = spec.headlightStrength;
     headlightLensMat.emissiveIntensity = 1.4 + hl * 2.8;
-    beamConeMat.opacity = hl * 0.24;
+    beamConeMat.opacity = hl * 0.1;
     beamConeMat.color.setHex(mode === 'sunset' ? 0xffe4b8 : 0xe4f3ff);
     poolMat.opacity = hl * 0.85;
     poolMat.color.setHex(mode === 'sunset' ? 0xffdfb0 : 0xdbf0ff);

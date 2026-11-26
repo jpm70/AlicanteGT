@@ -113,7 +113,7 @@ export function stepCarPhysics(
   // 2. Dirección progresiva: el volante tarda en girar y vuelve solo al centro (más lento a velocidad alta)
   const steerInput = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   const speedRatio01 = Math.min(absSpeed / MAX_FORWARD_MPS, 1);
-  const rate = steerInput === 0 ? 5.5 : (Math.sign(steerInput) !== Math.sign(state.steerCmd) && state.steerCmd !== 0 ? 7.5 : 3.6 - 1.5 * speedRatio01);
+  const rate = steerInput === 0 ? 9 : (Math.sign(steerInput) !== Math.sign(state.steerCmd) && state.steerCmd !== 0 ? 12 : 7.0 - 2.5 * speedRatio01);
   const cmdTarget = steerInput;
   const stepCmd = rate * dt;
   state.steerCmd += Math.max(-stepCmd, Math.min(stepCmd, cmdTarget - state.steerCmd));
@@ -144,7 +144,7 @@ export function stepCarPhysics(
     const delta = state.steerAngleRad * (canDrift ? 1.5 : 1);
     const lowSpeedFactor = Math.min(absSpeed / 3.0, 1.0);
     const wanted = (absSpeed * Math.tan(delta)) / WHEELBASE;
-    const gripLat = canDrift ? 15.5 : 10.5;                       // m/s² de agarre lateral (~1,1 g)
+    const gripLat = canDrift ? 24 : 18;                       // m/s² de agarre lateral (~1,1 g)
     const maxYaw = gripLat / Math.max(absSpeed, 4);
     yawRateRad = Math.max(-maxYaw, Math.min(maxYaw, wanted)) * lowSpeedFactor * directionSign;
     state.headingDeg = (state.headingDeg + yawRateRad * RAD_TO_DEG * dt + 360) % 360;
@@ -153,7 +153,7 @@ export function stepCarPhysics(
   state.latAccel = state.yawRate * state.speedMps;
   // Deslizamiento natural al pedir más de lo que da el agarre
   if (!canDrift) {
-    const slipNat = Math.max(-0.07, Math.min(0.07, state.latAccel * 0.0065));
+    const slipNat = Math.max(-0.07, Math.min(0.07, state.latAccel * 0.004));
     state.driftSlipRad = damp(state.driftSlipRad, slipNat, 6, dt);
   }
 
@@ -172,7 +172,7 @@ export function stepCarPhysics(
 
   const longAccel = (state.speedMps - prevSpeed) / dt;
   const targetPitch = Math.max(-0.042, Math.min(0.036, -longAccel * 0.0016));
-  const targetRoll = Math.max(-0.075, Math.min(0.075, state.latAccel * 0.0055));
+  const targetRoll = Math.max(-0.075, Math.min(0.075, state.latAccel * 0.0042));
 
   state.bodyPitchRad = damp(state.bodyPitchRad, targetPitch, 6.5, dt);
   state.bodyRollRad = damp(state.bodyRollRad, targetRoll, 6.5, dt);
