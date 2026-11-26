@@ -2,16 +2,22 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { heightAt } from './geo';
 import { nodeKey, type Traffic, type Way } from './traffic';
+import type { Signals } from './signals';
 
 interface Ped {
   way: Way; dir: 1 | -1; s: number; side: 1 | -1; off: number;
   v: number; vwalk: number; x: number; z: number; fx: number; fz: number;
   phase: number; shirt: number; pants: number; pause: number; flee: number; bad: number; h: number; test?: boolean;
+  cw?: Cross;
 }
+
+/** Peatón que cruza por un paso de cebra: espera en una acera, cruza cuando los coches de esa vía tienen rojo y vuelve a esperar. */
+interface Cross { cx: number; cz: number; fx: number; fz: number; w: number; side: 1 | -1; a: number; go: boolean; timer: number; trips: number }
 
 const SHIRTS = [0xd9d9d6, 0x2f4f8a, 0xb23a3a, 0x3f7a4f, 0xe0b23c, 0x1f1f24, 0x8a5a9c, 0xe8e2d0, 0x4aa0b8, 0xc96a2a, 0x6b6f75];
 const PANTS = [0x23324a, 0x1c1c20, 0x4a5a78, 0x6d5a45, 0x8a8f96, 0x2a3b2f, 0x3a3a40];
-const MAX_PEDS = 90;
+const MAX_PEDS = 120;
+const WALK_V = 1.35;
 
 function tint(g: THREE.BufferGeometry, c: number, part: number, limb: number, pivot: number): THREE.BufferGeometry {
   const ng = g.index ? g.toNonIndexed() : g;
@@ -60,6 +66,8 @@ export class Pedestrians {
   private aPhase: THREE.InstancedBufferAttribute;
   private aSpd: THREE.InstancedBufferAttribute;
   private peds: Ped[] = [];
+  private crosswalks = new Map<string, number[][]>();
+  private roadObst: { x: number; z: number }[] = [];
   private tmpM = new THREE.Matrix4();
   private tmpQ = new THREE.Quaternion();
   private tmpV = new THREE.Vector3();
@@ -68,7 +76,7 @@ export class Pedestrians {
   private ay = new THREE.Vector3(0, 1, 0);
   enabled = true;
 
-  constructor(private scene: THREE.Scene, private traffic: Traffic, private walkable: (x: number, z: number) => boolean) {
+  constructor(private scene: THREE.Scene, private traffic: Traffic, private walkable: (x: number, z: number) => boolean, private signals: Signals | null = null) {
     this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0 });
     this.mat.onBeforeCompile = (sh) => {
       sh.uniforms.uTime = this.timeU;
@@ -96,6 +104,53 @@ export class Pedestrians {
     this.geo.setAttribute('aSpd', this.aSpd);
     scene.add(this.mesh);
   }
+
+  addCrosswalks(key: string, list: number[][]) { this.crosswalks.set(key, list); }
+  removeCrosswalks(key: string) { this.crosswalks.delete(key); }
+
+  /** Peatones que están ahora en la calzada (los coches les ceden el paso). */
+  onRoad(): { x: number; z: number }[] { return this.roadObst; }
+
+  /** Posición de un cruzante: de una acera a la otra por la perpendicular de la vía. */
+  private placeCross(p: Ped) {
+    const c = p.cw!, half = c.w / 2 + 0.9;
+    const nx = -c.fz, nz = c.fx;
+    const s0 = c.side * half, s1 = -c.side * half;
+    const o = s0 + (s1 - s0) * c.a;
+    p.x = c.cx + nx * o; p.z = c.cz + nz * o;
+    p.fx = -nx * c.side; p.fz = -nz * c.side;
+  }
+
+  private crossReady(c: Cross): boolean {
+    const need = (c.w + 1.8) / WALK_V + 1.0;
+    if (this.signals) {
+      const st = this.signals.stateAt(c.cx, c.cz, c.fx, c.fz);
+      if (st) return st.state === 'r' && st.left > need;
+    }
+    return !this.traffic.carWithin(c.cx, c.cz, 28);                         // sin semáforo: cruza cuando no vienen coches
+  }
+
+  private spawnCross(px: number, pz: number) {
+    const all: number[][] = [];
+    for (const l of this.crosswalks.values()) for (const c of l) all.push(c);
+    for (let tries = 0; tries < 8 && all.length; tries++) {
+      const c = all[Math.floor(Math.random() * all.length)];
+      const d = Math.hypot(c[0] - px, c[1] - pz);
+      if (d < 15 || d > 110) continue;
+      if (this.peds.filter((q) => q.cw && Math.hypot(q.cw.cx - c[0], q.cw.cz - c[1]) < 3).length >= 2) continue;
+      const side: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+      const p: Ped = {
+        way: this.dummyWay, dir: 1, s: 0, side: 1, off: 0, v: 0, vwalk: WALK_V, x: 0, z: 0, fx: 0, fz: 1, phase: Math.random() * 6.28,
+        shirt: SHIRTS[Math.floor(Math.random() * SHIRTS.length)], pants: PANTS[Math.floor(Math.random() * PANTS.length)], pause: 0, flee: 0, bad: 0, h: 0.93 + Math.random() * 0.14,
+        cw: { cx: c[0], cz: c[1], fx: c[2], fz: c[3], w: c[4], side, a: 0, go: false, timer: Math.random() * 6, trips: 0 },
+      };
+      this.placeCross(p);
+      this.peds.push(p);
+      return;
+    }
+  }
+
+  private dummyWay: Way = { id: -2, cls: 'x', ow: 0, w: 0, pts: [[0, 0], [1, 0]], cum: [0, 1], len: 1, tiles: new Set() };
 
   private place(p: Ped) {
     const w = p.way, cum = w.cum;
@@ -173,10 +228,31 @@ export class Pedestrians {
     this.timeU.value += dt;
     const { ways } = this.traffic.graph();
     const target = Math.round(60 * density);
-    if (this.peds.length < target && ways.length) { this.spawn(px, pz, ways); this.spawn(px, pz, ways); }
+    const nCross = this.peds.filter((q) => q.cw).length;
+    if (nCross < Math.round(16 * density)) this.spawnCross(px, pz);
+    if (this.peds.length - nCross < target && ways.length) { this.spawn(px, pz, ways); this.spawn(px, pz, ways); }
+    this.roadObst = [];
     const hx = Math.sin(headingRad), hz = -Math.cos(headingRad);
     const keep: Ped[] = [];
     for (const p of this.peds) {
+      if (p.cw) {                                                    // peatón de paso de cebra
+        const c = p.cw;
+        if (Math.hypot(p.x - px, p.z - pz) > 150) continue;
+        if (!c.go) {
+          p.v += Math.max(-4 * dt, Math.min(2.5 * dt, 0 - p.v));
+          c.timer -= dt;
+          if (c.timer <= 0 && this.crossReady(c)) c.go = true;
+        } else {
+          p.v += Math.max(-4 * dt, Math.min(2.5 * dt, WALK_V - p.v));
+          c.a += (p.v * dt) / (c.w + 1.8);
+          if (c.a >= 1) { c.a = 0; c.go = false; c.side = (c.side * -1) as 1 | -1; c.timer = 3 + Math.random() * 10; c.trips++; }
+          if (c.a > 0.08 && c.a < 0.92) this.roadObst.push({ x: p.x, z: p.z });
+        }
+        this.placeCross(p);
+        if (c.trips >= 3) continue;                                  // tras unas idas y venidas, se va
+        keep.push(p);
+        continue;
+      }
       if (!p.test && (Math.hypot(p.x - px, p.z - pz) > 150 || (this.peds.length > target + 8 && Math.random() < 0.002))) continue;
       // se aparta si un coche rápido se le echa encima
       const dxc = p.x - px, dzc = p.z - pz, dc = Math.hypot(dxc, dzc);

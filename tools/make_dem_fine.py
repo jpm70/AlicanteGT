@@ -108,7 +108,8 @@ seen = set(); nplz = 0
 for pid, pg, forced in areas:
     if pid in seen: continue
     seen.add(pid)
-    x0, z0, x1, z1 = pg.buffer(10).bounds
+    BAND = 24.0 if forced else 10.0                                   # la Explanada enlaza con la ciudad en una banda ancha
+    x0, z0, x1, z1 = pg.buffer(BAND).bounds
     i0 = max(int((x0 - X0) // F), 0); i1 = min(int((x1 - X0) // F) + 1, nx_ - 1); j0 = max(int((z0 - Z0) // F), 0); j1 = min(int((z1 - Z0) // F) + 1, nz_ - 1)
     gx, gz = np.meshgrid(X0 + np.arange(i0, i1 + 1) * F, Z0 + np.arange(j0, j1 + 1) * F)
     pts_ = shapely.points(gx.ravel(), gz.ravel())
@@ -125,7 +126,7 @@ for pid, pg, forced in areas:
     else:
         if not forced and np.percentile(vals, 95) - np.percentile(vals, 5) > 6.0: continue
         target = float(np.median(vals)) if not forced else float(np.percentile(vals, 20))
-    wt = np.clip(1.0 - dist / 10.0, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt); wt[inside] = 1.0
+    wt = np.clip(1.0 - dist / BAND, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt); wt[inside] = 1.0
     out[j0:j1 + 1, i0:i1 + 1] = sub * (1 - wt) + target * wt; nplz += 1
 print(nplz, "plazas aplanadas", flush=True)
 print("nodos aplanados:", int((Wmax > 0.5).sum()), "de", out.size, "; cambio máx", float(np.abs(out - base).max()), "m", flush=True)
