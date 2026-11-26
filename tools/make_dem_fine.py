@@ -86,6 +86,37 @@ for wid, (w, pts) in ways.items():
             np.add.at(S, (iz[m], ix[m]), wt[m] * hh[m]); np.add.at(Wsum, (iz[m], ix[m]), wt[m]); np.maximum.at(Wmax, (iz[m], ix[m]), wt[m])
 tgt = np.where(Wsum > 0, S / np.maximum(Wsum, 1e-9), base)
 out = base * (1 - Wmax) + tgt * Wmax
+# --- plazas y paseos peatonales cerrados (incluida la Explanada): llanos, sin ladera hacia el mar ---
+import shapely
+from shapely.geometry import Polygon
+areas = []
+for tx, tz in tiles():
+    f = f"{D}osm_t/{tx}_{tz}_highway.json"
+    if not os.path.exists(f): continue
+    for e in json.load(open(f)):
+        t = e.get("tags", {}); g = e.get("geometry", [])
+        if e.get("type") == "way" and t.get("highway") in ("pedestrian", "footway") and len(g) >= 4 and g[0] == g[-1]:
+            pts = [((q["lon"] - LNG0) * KLNG, -(q["lat"] - LAT0) * KLAT) for q in g]
+            try: pg = Polygon(pts).buffer(0)
+            except Exception: continue
+            if pg.is_valid and pg.area >= 400: areas.append((e["id"], pg))
+seen = set(); nplz = 0
+for pid, pg in areas:
+    if pid in seen: continue
+    seen.add(pid)
+    x0, z0, x1, z1 = pg.buffer(10).bounds
+    i0 = max(int((x0 - X0) // F), 0); i1 = min(int((x1 - X0) // F) + 1, nx_ - 1); j0 = max(int((z0 - Z0) // F), 0); j1 = min(int((z1 - Z0) // F) + 1, nz_ - 1)
+    gx, gz = np.meshgrid(X0 + np.arange(i0, i1 + 1) * F, Z0 + np.arange(j0, j1 + 1) * F)
+    pts_ = shapely.points(gx.ravel(), gz.ravel())
+    dist = shapely.distance(pg, pts_).reshape(gx.shape); inside = shapely.contains(pg, pts_).reshape(gx.shape)
+    if inside.sum() < 4: continue
+    sub = out[j0:j1 + 1, i0:i1 + 1]
+    vals = sub[inside]
+    if np.percentile(vals, 95) - np.percentile(vals, 5) > 6.0: continue          # en ladera real (castillo) no se aplana
+    target = float(np.median(vals))
+    wt = np.clip(1.0 - dist / 10.0, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt); wt[inside] = 1.0
+    out[j0:j1 + 1, i0:i1 + 1] = sub * (1 - wt) + target * wt; nplz += 1
+print(nplz, "plazas aplanadas", flush=True)
 print("nodos aplanados:", int((Wmax > 0.5).sum()), "de", out.size, "; cambio máx", float(np.abs(out - base).max()), "m", flush=True)
 np.savez_compressed(D + "dem_fine.npz", x0=X0, z0=Z0, step=F, H=out.astype(np.float32))
 print("OK")
