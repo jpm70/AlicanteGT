@@ -99,9 +99,9 @@ for tx, tz in tiles():
             pts = [((q["lon"] - LNG0) * KLNG, -(q["lat"] - LAT0) * KLAT) for q in g]
             try: pg = Polygon(pts).buffer(0)
             except Exception: continue
-            if pg.is_valid and pg.area >= 400: areas.append((e["id"], pg))
+            if pg.is_valid and pg.area >= 400: areas.append((e["id"], pg, "splanada" in t.get("name", "")))
 seen = set(); nplz = 0
-for pid, pg in areas:
+for pid, pg, forced in areas:
     if pid in seen: continue
     seen.add(pid)
     x0, z0, x1, z1 = pg.buffer(10).bounds
@@ -112,8 +112,15 @@ for pid, pg in areas:
     if inside.sum() < 4: continue
     sub = out[j0:j1 + 1, i0:i1 + 1]
     vals = sub[inside]
-    if np.percentile(vals, 95) - np.percentile(vals, 5) > 6.0: continue          # en ladera real (castillo) no se aplana
-    target = float(np.median(vals))
+    # cota de la plaza: la de las calzadas que la rodean (así enlaza con ellas); si no hay, la mediana interior
+    ring = (dist < 9.0) & (~inside) & (Wmax[j0:j1 + 1, i0:i1 + 1] > 0.5)
+    rv = sub[ring]
+    if len(rv) >= 6:
+        if not forced and np.percentile(rv, 90) - np.percentile(rv, 10) > 4.0: continue          # plaza en ladera real: no se aplana
+        target = float(np.median(rv))
+    else:
+        if not forced and np.percentile(vals, 95) - np.percentile(vals, 5) > 6.0: continue
+        target = float(np.median(vals)) if not forced else float(np.percentile(vals, 20))
     wt = np.clip(1.0 - dist / 10.0, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt); wt[inside] = 1.0
     out[j0:j1 + 1, i0:i1 + 1] = sub * (1 - wt) + target * wt; nplz += 1
 print(nplz, "plazas aplanadas", flush=True)

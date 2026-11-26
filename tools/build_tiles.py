@@ -18,7 +18,8 @@ from shapely.ops import unary_union
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from world_config import *          # LAT0, LNG0, KLAT, KLNG, TILE, X0.., tiles(), tile_box(), ortho_px()
 from world_lib import *
-from world_decks import build_decks, _Mesh             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
+from world_decks import build_decks, _Mesh
+from world_boats import place_boats, boats_mesh             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
 
 D = "tools/data/"
 OUT = "public/world/tiles"
@@ -511,19 +512,27 @@ def build_tile(args):
     # --- mar, muelles, parques ---
     sea = G["SEA"].intersection(tbox)
     nat = ways(gather(tx, tz, "nat"))
-    pier_geoms, park_geoms = [], []
+    pier_geoms, park_geoms, pier_lines = [], [], []
     for e in nat:
         t = e.get("tags", {}); pts = [P(p) for p in e["geometry"]]
         if not near(pts): continue
         try:
             if t.get("man_made") in ("pier", "breakwater"):
                 pier_geoms.append(Polygon(pts).buffer(0) if pts[0] == pts[-1] and len(pts) > 3 else LineString(pts).buffer(3.5, cap_style=2))
+                if not (pts[0] == pts[-1] and len(pts) > 3): pier_lines.append(LineString(pts))
             elif (t.get("leisure") in ("park", "garden") or t.get("landuse") == "grass") and len(pts) >= 4 and pts[0] == pts[-1]:
                 park_geoms.append(make_valid(Polygon(pts)).buffer(0))
         except Exception:
             pass
     piers = unary_union(pier_geoms) if pier_geoms else Polygon()
     sea_free = sea.difference(piers.buffer(0.2)) if not sea.is_empty else sea
+    boats = []
+    if pier_lines and not sea.is_empty:
+        try:
+            water_b = G["SEA"].intersection(tbox.buffer(45)).difference(piers.buffer(0.3))
+            boats = place_boats(pier_lines, water_b, (x0, z0, x1, z1), (-700, 50, 500, 700))
+        except Exception as ex_:
+            print("barcos:", tx, tz, ex_, flush=True)
     parks = unary_union(park_geoms).difference(roads).difference(sea_free) if park_geoms else Polygon()
     land = tbox.difference(G["SEA"]); land = unary_union([land, piers.intersection(tbox)])
     if hole_eff is not None: land = land.difference(hole_eff); parks = parks.difference(hole_eff)
@@ -692,7 +701,9 @@ def build_tile(args):
     def add(name, geom, off, col, tint=False, uvfn=None):
         r = drape(geom, off, col, terrain_tint=tint, uvfn=uvfn)
         if r is not None: parts.append((name, r[0], r[1], r[2], r[3]))
-    add("Ground", land.intersection(tbox), 0.0, hexrgb(0xb7ad98), tint=True)
+    ground_g = land.intersection(tbox)
+    if not roads_t.is_empty: ground_g = ground_g.difference(roads_t.buffer(0.02))            # el suelo no asoma por el asfalto (manchas grises)
+    add("Ground", ground_g, 0.0, hexrgb(0xb7ad98), tint=True)
     add("Park", parks_t, 0.02, hexrgb(0x5f8a4a))
     add("Road", roads_t, 0.03, hexrgb(0x33363b))
     add("Sidewalk", walk_t, 0.12, hexrgb(0xd2cbb9))
@@ -716,6 +727,8 @@ def build_tile(args):
     if not sea_free.is_empty:
         w = tri_mesh(sea_free, -0.45, hexrgb(0x1d6fa5))
         if w is not None: parts.append(("Water", np.asarray(w.vertices), np.asarray(w.faces), np.asarray(w.visual.vertex_colors), None))
+    bm = boats_mesh(boats, -0.45) if boats else None
+    if bm is not None: parts.append(("Boats", bm[0], bm[1], bm[2], None))
     if wv: parts.append(("Walls", np.array(wv), np.array(wf), np.array(wc), np.array(wu)))
     dm = det.out()
     if dm is not None: parts.append(("Detail", dm[0], dm[1], dm[2], None))
