@@ -290,10 +290,11 @@ export class WorldScene {
       const t = Math.max(0, Math.min(1, ((x - sg.ax) * dx + (z - sg.az) * dz) / l2));
       if (Math.hypot(x - (sg.ax + dx * t), z - (sg.az + dz * t)) > sg.hw) continue;
       const o = sg.ao + (sg.bo - sg.ao) * t;
+      if (snap && o < -1.0) continue;        // al aparecer/reiniciar nunca dentro de un túnel: se queda en la calle de arriba
       const cand = base + o;
       // al teletransportar se prefiere la vía del corredor (túnel o puente); conduciendo, solo la que está a una altura alcanzable
       const dd = snap ? Math.abs(o) : Math.abs(cand - ref);
-      if ((snap || dd < 2.2) && dd < bd) { best = cand; bd = dd; }
+      if ((snap || dd < 1.0) && dd < bd) { best = cand; bd = dd; }
     }
     return best;
   }
