@@ -53,13 +53,32 @@ function dampAngleDeg(current: number, target: number, lambda: number, dt: numbe
   return (current + diff + 360) % 360;
 }
 
+/** Parámetros opcionales de la URL: ?lat=38.35&lng=-0.47&brg=90&cam=driver|chase|aerial (para compartir o probar un sitio). */
+function readStartOverrides(): { lat: number; lng: number; bearing: number; cam: CameraPreset | null } | null {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const lat = parseFloat(q.get('lat') ?? ''), lng = parseFloat(q.get('lng') ?? '');
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+    const brg = parseFloat(q.get('brg') ?? '');
+    const cam = q.get('cam');
+    return {
+      lat, lng,
+      bearing: Number.isFinite(brg) ? ((brg % 360) + 360) % 360 : INITIAL_VIEW.bearing,
+      cam: cam === 'driver' || cam === 'chase' || cam === 'aerial' ? cam : null,
+    };
+  } catch {
+    return null;
+  }
+}
+const START_OVERRIDE = typeof window !== 'undefined' ? readStartOverrides() : null;
+
 export default function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<WorldScene | null>(null);
   const audioRef = useRef<EngineAudioSynth | null>(null);
 
   const carStateRef = useRef<CarState>(
-    createInitialCarState(INITIAL_VIEW.lat, INITIAL_VIEW.lng, INITIAL_VIEW.bearing)
+    createInitialCarState(START_OVERRIDE?.lat ?? INITIAL_VIEW.lat, START_OVERRIDE?.lng ?? INITIAL_VIEW.lng, START_OVERRIDE?.bearing ?? INITIAL_VIEW.bearing)
   );
   const controlsRef = useRef<ControlInput>({
     throttle: false,
@@ -78,8 +97,8 @@ export default function App() {
   const atmosphereRef = useRef<AtmosphereMode>('sunset');
 
   const [paint, setPaint] = useState<CarPaintPreset>(CAR_PAINT_PRESETS[0]);
-  const [cameraPreset, setCameraPreset] = useState<CameraPreset>('chase');
-  const cameraPresetRef = useRef<CameraPreset>('chase');
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset>(START_OVERRIDE?.cam ?? 'chase');
+  const cameraPresetRef = useRef<CameraPreset>(START_OVERRIDE?.cam ?? 'chase');
 
   const [currentLandmarkId, setCurrentLandmarkId] = useState<string>(ALICANTE_LANDMARKS[0].id);
   const [audioEnabled, setAudioEnabled] = useState(false);
@@ -237,6 +256,7 @@ export default function App() {
     const isSoftwareGl = detectSoftwareWebGL();
     const world = new WorldScene(container, CAR_PAINT_PRESETS[0], atmosphereRef.current, isSoftwareGl);
     worldRef.current = world;
+    world.setCameraPreset(cameraPresetRef.current);
     (window as unknown as { __world?: WorldScene }).__world = world;
 
     const canvas = world.renderer.domElement;
