@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { ATMOSPHERE_SPECS } from '../game/constants';
 import type { AtmosphereMode, CameraPreset, CarPaintPreset, CarState } from '../types/game';
 import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
@@ -19,6 +24,26 @@ const SKY: Record<AtmosphereMode, { sky: number; fog: number; fogFar: number }> 
   sunset: { sky: 0xf4b183, fog: 0xe9b79a, fogFar: 520 },
   night: { sky: 0x070b18, fog: 0x0b1226, fogFar: 380 },
   day: { sky: 0x8ec9f0, fog: 0xcfe6f5, fogFar: 700 },
+};
+
+/** Realce final (en espacio de pantalla): saturación y contraste suaves y viñeta ligera. */
+const GRADE = {
+  uniforms: { tDiffuse: { value: null as THREE.Texture | null }, uSat: { value: 1.08 }, uVig: { value: 0.28 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uSat; uniform float uVig; varying vec2 vUv;
+    void main(){ vec4 c = texture2D(tDiffuse, vUv);
+      float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+      c.rgb = mix(vec3(l), c.rgb, uSat);
+      c.rgb = (c.rgb - 0.5) * 1.05 + 0.5;
+      float d = length((vUv - 0.5) * vec2(1.0, 0.85));
+      c.rgb *= 1.0 - uVig * smoothstep(0.32, 0.85, d);
+      gl_FragColor = vec4(max(c.rgb, 0.0), c.a); }`,
+};
+/** Bloom y ambiente por atmósfera. */
+const FX: Record<AtmosphereMode, { bloom: number; thr: number; ao: number; vig: number }> = {
+  sunset: { bloom: 0.26, thr: 0.9, ao: 0.9, vig: 0.3 },
+  night: { bloom: 0.6, thr: 0.62, ao: 0.8, vig: 0.38 },
+  day: { bloom: 0.1, thr: 1.05, ao: 1.0, vig: 0.22 },
 };
 
 const CAM: Record<CameraPreset, { dist: number; height: number; look: number; fov: number }> = {
@@ -82,6 +107,11 @@ export class WorldScene {
   private ro: ResizeObserver;
   private mode: AtmosphereMode;
   private envTarget: THREE.WebGLRenderTarget | null = null;
+  private pmrem: THREE.PMREMGenerator | null = null;
+  private composer: EffectComposer | null = null;
+  private bloom: UnrealBloomPass | null = null;
+  private gtao: GTAOPass | null = null;
+  private grade: ShaderPass | null = null;
   private wallUniforms = { uMask: { value: null as THREE.Texture | null }, uNight: { value: 0 } };
 
   constructor(
@@ -97,7 +127,7 @@ export class WorldScene {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.95;
     this.renderer.shadowMap.enabled = !lowPower;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.display = 'block';
 
@@ -113,10 +143,9 @@ export class WorldScene {
     this.rim = new THREE.DirectionalLight(spec.rimColor, spec.rimIntensity * LK);
     this.scene.add(this.hemi, this.rim);
 
-    const pm = new THREE.PMREMGenerator(this.renderer);
-    this.envTarget = pm.fromScene(new RoomEnvironment(), 0.04);
-    this.scene.environment = this.envTarget.texture;
-    pm.dispose();
+    this.pmrem = new THREE.PMREMGenerator(this.renderer);
+    const fxq = new URLSearchParams(window.location.search).get('fx');
+    if (fxq === '1' || (fxq !== '0' && !lowPower)) this.initComposer();
 
     this.rig = createSportsCar(paint, mode);
     this.rig.root.traverse((o) => {
@@ -133,6 +162,63 @@ export class WorldScene {
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(container);
     this.resize();
+  }
+
+  /** Postproceso: oclusión ambiental (GTAO), bloom, tonemapping y realce final. fx=0 en la URL lo desactiva. */
+  private initComposer() {
+    const w = this.container.clientWidth || 1, h = this.container.clientHeight || 1;
+    const pr = this.renderer.getPixelRatio();
+    const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: 4 });
+    const c = new EffectComposer(this.renderer, rt);
+    c.addPass(new RenderPass(this.scene, this.camera));
+    const gtao = new GTAOPass(this.scene, this.camera, w, h);
+    gtao.updateGtaoMaterial({ radius: 1.8, distanceExponent: 1.4, thickness: 2.5, scale: 1.2, samples: 12, distanceFallOff: 1 });
+    gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, rings: 2, samples: 12 });
+    if (new URLSearchParams(window.location.search).get('ao') === '1') c.addPass(gtao);   // experimental: oclusión ambiental solo con ?ao=1
+    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.2, 0.55, 1.0);
+    c.addPass(bloom);
+    c.addPass(new OutputPass());
+    const grade = new ShaderPass(GRADE);
+    c.addPass(grade);
+    this.composer = c; this.gtao = gtao; this.bloom = bloom; this.grade = grade;
+    this.applyFx();
+  }
+
+  private applyFx() {
+    const f = FX[this.mode];
+    if (this.bloom) { this.bloom.strength = f.bloom; this.bloom.threshold = f.thr; }
+    if (this.gtao) this.gtao.blendIntensity = f.ao;
+    if (this.grade) this.grade.uniforms.uVig.value = f.vig;
+  }
+
+  /** Reflejos con el cielo real de la atmósfera actual (en vez de un estudio): cúpula con degradado, suelo y sol. */
+  private rebuildEnv() {
+    if (!this.pmrem) return;
+    const sc = new THREE.Scene();
+    const kp = ATMOSPHERE_SPECS[this.mode].keyPosition;
+    const sunDir = new THREE.Vector3(kp[0], Math.abs(kp[1]) + 8, kp[2]).normalize();
+    const sunI = this.mode === 'night' ? 1.2 : this.mode === 'sunset' ? 9 : 7;
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(50, 32, 16),
+      new THREE.ShaderMaterial({
+        uniforms: { ...this.skyU, uSun: { value: sunDir }, uSunI: { value: sunI }, uGround: { value: new THREE.Color(this.mode === 'night' ? 0x05070c : 0x6b6a66) } },
+        side: THREE.BackSide,
+        vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: `varying vec3 vDir; uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon; uniform vec3 uGround; uniform vec3 uSun; uniform float uSunI;
+          void main(){ float y = vDir.y; float h = clamp(y, 0.0, 1.0);
+            vec3 c = mix(uHorizon, uMid, smoothstep(0.0, 0.28, h)); c = mix(c, uZenith, smoothstep(0.22, 0.9, h));
+            c = mix(c, uGround, smoothstep(0.0, -0.25, y));
+            c += pow(max(dot(normalize(vDir), uSun), 0.0), 300.0) * uSunI + pow(max(dot(normalize(vDir), uSun), 0.0), 12.0) * uSunI * 0.04;
+            gl_FragColor = vec4(c, 1.0); }`,
+      })
+    );
+    sc.add(dome);
+    const next = this.pmrem.fromScene(sc, 0.02);
+    this.envTarget?.dispose();
+    this.envTarget = next;
+    this.scene.environment = next.texture;
+    dome.geometry.dispose();
+    (dome.material as THREE.Material).dispose();
   }
 
   /** Carga el manifiesto y el relieve global, y deja lista la tesela donde está el coche. */
@@ -706,6 +792,8 @@ export class WorldScene {
     this.fog.color.setHex(s.fog);
     this.fog.far = s.fogFar;
     this.fog.near = s.fogFar * 0.12;
+    this.rebuildEnv();
+    this.applyFx();
   }
 
   setAtmosphere(mode: AtmosphereMode) {
@@ -741,6 +829,8 @@ export class WorldScene {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h, false);
+    this.composer?.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer?.setSize(w, h);
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
     this.camera.aspect = w / h;
@@ -824,13 +914,16 @@ export class WorldScene {
     this.rim.position.set(p.x + 14, 9, p.z + 16);
 
     this.tickSky(p.x, p.z, dt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) this.composer.render(dt);
+    else this.renderer.render(this.scene, this.camera);
   }
 
   dispose() {
     this.ro.disconnect();
     this.rig.dispose();
     this.envTarget?.dispose();
+    this.pmrem?.dispose();
+    this.composer?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
