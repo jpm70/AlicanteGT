@@ -22,14 +22,18 @@ H = np.maximum(H, 0.0)
 b = np.pad(H, 1, mode="edge")
 HC = sum(b[i:i + H.shape[0], j:j + H.shape[1]] for i in range(3) for j in range(3)) / 9.0
 CS = d["step"]; CX0, CZ0 = d["x0"], d["z0"]
+HCg = HC
+_b2 = np.pad(HC, 1, mode="edge")
+HR = sum(_b2[i:i + HC.shape[0], j:j + HC.shape[1]] for i in range(3) for j in range(3)) / 9.0     # versión más suave para la cota de las calles
 
 
 def cr(t, p0, p1, p2, p3):
     return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t ** 3)
 
 
-def sample(x, z):
+def sample(x, z, HC=None):
     """Catmull-Rom bicúbico del DEM grueso en (x, z) (arrays)."""
+    HC = HCg if HC is None else HC
     gx = np.clip((np.asarray(x, float) - CX0) / CS, 0, HC.shape[1] - 1.001); gz = np.clip((np.asarray(z, float) - CZ0) / CS, 0, HC.shape[0] - 1.001)
     ix = gx.astype(int); iz = gz.astype(int); fx = gx - ix; fz = gz - iz
     ny, nx = HC.shape
@@ -69,19 +73,19 @@ for wid, (w, pts) in ways.items():
     if L < 4: continue
     n = max(2, int(L / 4.0) + 1); s = np.linspace(0, L, n)
     px = np.interp(s, cum, P[:, 0]); pz = np.interp(s, cum, P[:, 1])
-    h = sample(px, pz)
-    k = 5   # suavizado a lo largo del eje (±20 m)
+    h = sample(px, pz, HR)
+    k = 15  # suavizado a lo largo del eje (±60 m): quita las ondas del DEM (edificios y arbolado) y deja pendientes suaves
     if n > 2:
         hp = np.pad(h, k, mode="edge"); ker = np.ones(2 * k + 1) / (2 * k + 1)
         h = np.convolve(hp, ker, mode="valid")
-    hw = w / 2 + 3.0                                   # calzada + acera
-    for off_x in range(-2, 3):
-        for off_z in range(-2, 3):
+    hw = w / 2 + 12.0                                  # calzada + acera + una celda entera: ningún nodo que influya en la calzada queda a medias (ondulaciones)
+    for off_x in range(-3, 4):
+        for off_z in range(-3, 4):
             ix = np.round((px - X0) / F).astype(int) + off_x; iz = np.round((pz - Z0) / F).astype(int) + off_z
             ok = (ix >= 0) & (ix < nx_) & (iz >= 0) & (iz < nz_)
             ix, iz, hh, qx, qz = ix[ok], iz[ok], h[ok], px[ok], pz[ok]
             dist = np.hypot(X0 + ix * F - qx, Z0 + iz * F - qz)
-            wt = np.clip(1.0 - (dist - hw) / 9.0, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt)
+            wt = np.clip(1.0 - (dist - hw) / 12.0, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt)
             m = wt > 0
             np.add.at(S, (iz[m], ix[m]), wt[m] * hh[m]); np.add.at(Wsum, (iz[m], ix[m]), wt[m]); np.maximum.at(Wmax, (iz[m], ix[m]), wt[m])
 tgt = np.where(Wsum > 0, S / np.maximum(Wsum, 1e-9), base)

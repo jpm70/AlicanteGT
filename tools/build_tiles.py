@@ -102,12 +102,21 @@ def load_dem():
     G["HG"] = H
 
 
+def _cr(t, p0, p1, p2, p3):
+    return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t ** 3)
+
+
 def hf(x, z):
-    HG = G["HG"]; DXS = G["DXS"]; DZS = G["DZS"]
+    """Altura del relieve: Catmull-Rom bicúbico sobre la malla de 10 m (C1: sin quiebros de pendiente en la malla). Igual que heightAt() de geo.ts."""
+    HG = G["HG"]; ny, nx = HG.shape
     x = np.asarray(x, dtype=float); z = np.asarray(z, dtype=float)
-    gx = np.clip((x - G["DX0"]) / G["DST"], 0, len(DXS) - 1.001); gz = np.clip((z - G["DZ0"]) / G["DST"], 0, len(DZS) - 1.001)
+    gx = np.clip((x - G["DX0"]) / G["DST"], 0, nx - 1.001); gz = np.clip((z - G["DZ0"]) / G["DST"], 0, ny - 1.001)
     ix = gx.astype(int); iz = gz.astype(int); fx = gx - ix; fz = gz - iz
-    return HG[iz, ix] * (1 - fx) * (1 - fz) + HG[iz, ix + 1] * fx * (1 - fz) + HG[iz + 1, ix] * (1 - fx) * fz + HG[iz + 1, ix + 1] * fx * fz
+    rows = []
+    for dz in (-1, 0, 1, 2):
+        jz = np.clip(iz + dz, 0, ny - 1)
+        rows.append(_cr(fx, *[HG[jz, np.clip(ix + dx, 0, nx - 1)] for dx in (-1, 0, 1, 2)]))
+    return _cr(fz, *rows)
 
 
 def lerp_col(c0, c1, t):
@@ -481,8 +490,22 @@ def build_tile(args):
         elif k in WALK_W:
             walk_geoms.append(LineString(pts).buffer(WALK_W[k] / 2, cap_style=2, join_style=1))
     roads = unary_union(road_geoms) if road_geoms else Polygon()
+    # edificios pegados a la calzada: el ancho de OSM es una estimación y a veces el asfalto llega a la fachada (calle sin acera);
+    # se estrecha la calzada para dejar 1,6 m de acera entre el asfalto y el edificio
+    bl = []
+    for e_ in ways(gather(tx, tz, "building")):
+        try:
+            if len(e_["geometry"]) < 4: continue
+            g_ = Polygon([P(p_) for p_ in e_["geometry"]])
+            if g_.is_valid and g_.area > 6: bl.append(g_)
+        except Exception: pass
+    bld_u = unary_union(bl) if bl else Polygon()
+    if not roads.is_empty and not bld_u.is_empty:
+        roads = roads.difference(bld_u.buffer(1.6))
     walk = unary_union(walk_geoms).difference(roads) if walk_geoms else Polygon()
     sidew = unary_union([g.buffer(1.8) for g in road_geoms]).difference(roads) if road_geoms else Polygon()
+    if not bld_u.is_empty:
+        sidew = sidew.difference(bld_u)
     mosaic = unary_union(mosaic_geoms).buffer(25).buffer(-25).difference(roads) if mosaic_geoms else Polygon()   # cierra el hueco del edificio quitado
     walk = unary_union([walk, sidew] + plaza_geoms).difference(mosaic)
     dk = build_decks(deck_ways, hf, (x0, z0, x1, z1), roads)
