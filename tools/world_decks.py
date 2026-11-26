@@ -27,7 +27,11 @@ def _smooth(t):
     return t * t * (3 - 2 * t)
 
 
-def offset_fn(kind, layer, total):
+def offset_fn(kind, layer, total, foot=False):
+    if foot:                                     # pasarela peatonal: 5,7 m de gálibo, rampas largas, tramo central llano
+        H = 5.7; R = max(8.0, min(total * 0.36, 26.0))
+        if total < 2 * R: H *= total / (2 * R)
+        return lambda s: H * _smooth(min(s, total - s) / R)
     if kind == "bridge":
         H = min(5.4 * max(layer, 1), 11.0); R = 50.0
         if total < 2 * R: H *= total / (2 * R)
@@ -83,7 +87,7 @@ def build_decks(deck_ways, hf, tile, roads_ground):
     for w_ in deck_ways:
         w = w_["w"]; S, total = resample(w_["pts"], 3.0)
         if len(S) < 2: continue
-        off = offset_fn(w_["kind"], w_["layer"], total)
+        off = offset_fn(w_["kind"], w_["layer"], total, w_.get("foot", False))
         o = [off(s) for (_, _, s) in S]
         drive_polys.append(LineString(w_["pts"]).buffer(w / 2 + 0.2, cap_style=2, join_style=1))
         # tangentes y normales
@@ -110,7 +114,7 @@ def build_decks(deck_ways, hf, tile, roads_ground):
                     except Exception: pass
         # marcas viales (de todas: build_tiles filtra por tesela)
         cum = [s for (_, _, s) in S]
-        marks.append({"k": w_["k"], "w": w, "ow": w_["ow"], "ln": w_["ln"], "p": [[x, z] for (x, z, _) in S], "cum": cum, "o": o})
+        if not w_.get("foot"): marks.append({"k": w_["k"], "w": w, "ow": w_["ow"], "ln": w_["ln"], "p": [[x, z] for (x, z, _) in S], "cum": cum, "o": o})
         # propiedad: tesela donde cae el punto medio
         mid = S[len(S) // 2]
         if not (x0 <= mid[0] < x1 and z0 <= mid[1] < z1): continue
@@ -123,7 +127,7 @@ def build_decks(deck_ways, hf, tile, roads_ground):
                 e.append(((S[k][0] - nx * w / 2, S[k][1] - nz * w / 2), (S[k][0] + nx * w / 2, S[k][1] + nz * w / 2), y, (nx, nz), g[k]))
             (L0, R0, y0, n0, g0), (L1, R1, y1, n1, g1) = e
             up = (0, 1, 0)
-            deck.quad([(L0[0], y0 + 0.04, L0[1]), (R0[0], y0 + 0.04, R0[1]), (R1[0], y1 + 0.04, R1[1]), (L1[0], y1 + 0.04, L1[1])], up, ASPH)
+            deck.quad([(L0[0], y0 + 0.04, L0[1]), (R0[0], y0 + 0.04, R0[1]), (R1[0], y1 + 0.04, R1[1]), (L1[0], y1 + 0.04, L1[1])], up, [176, 172, 164, 255] if w_.get("foot") else ASPH)
             nxm, nzm = n0
             if w_["kind"] == "bridge":
                 # fachada exterior, subtablero y pretiles
@@ -160,10 +164,14 @@ def build_decks(deck_ways, hf, tile, roads_ground):
             nxt = 14.0
             for (x, z, s), oo, gg, t in zip(S, o, g, T):
                 if s < nxt: continue
-                nxt = s + 16.0
+                nxt = s + (12.0 if w_.get("foot") else 16.0)
                 if oo < 2.2: continue
                 if roads_ground is not None and roads_ground.contains(Point(x, z)): continue
                 ang = -math.atan2(t[1], t[0])
+                if w_.get("foot"):
+                    struct.add_parts([box_at(x, z, gg - 0.3, gg + oo - 0.9, 0.7, 0.7, ang, CONC)])
+                    obst.append({"id": -5, "h": 6, "p": [[round(x + 0.5 * math.cos(a * math.pi / 4), 2), round(z + 0.5 * math.sin(a * math.pi / 4), 2)] for a in range(9)]})
+                    continue
                 struct.add_parts([box_at(x, z, gg - 0.3, gg + oo - 0.9, 1.7, 1.5, ang, CONC)])
                 obst.append({"id": -5, "h": 6, "p": [[round(x + 0.95 * math.cos(a * math.pi / 4), 2), round(z + 0.95 * math.sin(a * math.pi / 4), 2)] for a in range(9)]})
     hole = unary_union(holes) if holes else None
