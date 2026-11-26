@@ -71,6 +71,8 @@ export class WorldScene {
   private skyTime = 0;
   private loader = new GLTFLoader();
   public loadedCount = 0;
+  private camClock = 0;
+  private camRoll = 0;
   private groundPitch = 0;
   private groundRoll = 0;
   private camGround = 0;
@@ -767,9 +769,22 @@ export class WorldScene {
       this.camPos.y = damp(this.camPos.y, ty, l, dt);
       this.camPos.z = damp(this.camPos.z, tz, l, dt);
     }
-    this.camera.position.copy(this.camPos);
-    this.camera.lookAt(p.x + fx * cfg.look, this.camGround + (driver ? 1.1 : 1.0), p.z + fz * cfg.look);
-    const fov = cfg.fov + Math.min(Math.abs(state.speedMps) / 56, 1) * 8;
+    // sensaciones de conducción: vibración por la velocidad, sacudida en impactos, mirada hacia el interior de la curva e inclinación
+    state.shake = Math.max(0, state.shake - dt * 2.2);
+    this.camClock += dt * (8 + Math.abs(state.speedMps) * 0.9);
+    const spd = Math.min(Math.abs(state.speedMps) / 40, 1);
+    const vib = spd * (driver ? 0.012 : 0.006) + state.shake * 0.12;
+    this.camera.position.set(
+      this.camPos.x + Math.sin(this.camClock * 1.7) * vib,
+      this.camPos.y + Math.sin(this.camClock * 2.3) * vib + Math.sin(this.camClock * 0.9) * state.shake * 0.05,
+      this.camPos.z + Math.cos(this.camClock * 1.3) * vib);
+    const lookSide = state.steerCmd * 2.2 * (driver ? 1.4 : 1);
+    this.camera.up.set(0, 1, 0);
+    this.camera.lookAt(p.x + fx * cfg.look - fz * lookSide, this.camGround + (driver ? 1.1 : 1.0), p.z + fz * cfg.look + fx * lookSide);
+    this.camRoll += ((driver ? -state.bodyRollRad * 0.9 : state.bodyRollRad * 0.5) - this.camRoll) * (1 - Math.exp(-6 * dt));
+    this.camera.rotateZ(this.camRoll);
+    const accelKick = Math.max(-1, Math.min(1, state.bodyPitchRad * -25));
+    const fov = cfg.fov + spd * 8 + accelKick * 1.5 + (state.isBraking ? 0 : 0);
     if (Math.abs(this.camera.fov - fov) > 0.05) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();

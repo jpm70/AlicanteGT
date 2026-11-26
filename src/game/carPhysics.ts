@@ -39,6 +39,10 @@ export function createInitialCarState(
     isDrifting: false,
     brakeIntensity: 0,
     driftIntensity: 0,
+    steerCmd: 0,
+    yawRate: 0,
+    latAccel: 0,
+    shake: 0,
   };
 }
 
@@ -65,7 +69,7 @@ export function stepCarPhysics(
     } else {
       // Torque curve: punchy off the line, smooth taper near top speed
       const speedRatio = Math.min(absSpeed / MAX_FORWARD_MPS, 1);
-      accel = 17.5 * (1 - 0.58 * speedRatio * speedRatio);
+      accel = 11.5 * (1 - 0.58 * speedRatio * speedRatio);
     }
   } else if (input.brake) {
     if (state.speedMps > 0.6) {
@@ -88,10 +92,13 @@ export function stepCarPhysics(
     }
   }
 
+  // Freno motor al soltar el acelerador
+  if (!input.throttle && !input.brake && absSpeed > 1) accel -= Math.sign(state.speedMps) * 1.6;
+
   // Rolling resistance & aerodynamic drag
   const drag =
-    -state.speedMps * 0.24 -
-    state.speedMps * absSpeed * 0.0042;
+    -state.speedMps * 0.035 -
+    state.speedMps * absSpeed * 0.0013;
   accel += drag;
 
   state.speedMps += accel * dt;
@@ -103,18 +110,24 @@ export function stepCarPhysics(
 
   state.speedMps = Math.max(MAX_REVERSE_MPS, Math.min(MAX_FORWARD_MPS, state.speedMps));
 
-  // 2. Steering input & front wheel visual angle
+  // 2. Dirección progresiva: el volante tarda en girar y vuelve solo al centro (más lento a velocidad alta)
   const steerInput = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  const speedRatio01 = Math.min(absSpeed / MAX_FORWARD_MPS, 1);
+  const rate = steerInput === 0 ? 5.5 : (Math.sign(steerInput) !== Math.sign(state.steerCmd) && state.steerCmd !== 0 ? 7.5 : 3.6 - 1.5 * speedRatio01);
+  const cmdTarget = steerInput;
+  const stepCmd = rate * dt;
+  state.steerCmd += Math.max(-stepCmd, Math.min(stepCmd, cmdTarget - state.steerCmd));
+  const steerCmd = state.steerCmd;
   const maxVisualSteer = 0.56; // ~32 deg at low speed
-  const speedSteerScale = 1 - Math.min(absSpeed / MAX_FORWARD_MPS, 1) * 0.52;
-  const targetVisualSteer = steerInput * maxVisualSteer * speedSteerScale;
-  state.steerAngleRad = damp(state.steerAngleRad, targetVisualSteer, 12.5, dt);
+  const speedSteerScale = 1 - speedRatio01 * 0.62;
+  const targetVisualSteer = steerCmd * maxVisualSteer * speedSteerScale;
+  state.steerAngleRad = damp(state.steerAngleRad, targetVisualSteer, 14, dt);
 
   // 3. Drift dynamics (Space + steering at speed)
   const canDrift = input.handbrake && state.speedMps > 7.5;
   const isActivelyDrifting = canDrift && (Math.abs(steerInput) > 0 || Math.abs(state.driftSlipRad) > 0.08);
   const targetSlip = canDrift
-    ? steerInput * Math.min(0.46, 0.24 + (state.speedMps / MAX_FORWARD_MPS) * 0.24)
+    ? steerCmd * Math.min(0.46, 0.24 + (state.speedMps / MAX_FORWARD_MPS) * 0.24)
     : 0;
   state.driftSlipRad = damp(
     state.driftSlipRad,
@@ -123,18 +136,25 @@ export function stepCarPhysics(
     dt
   );
 
-  // 4. Yaw rate (heading change)
+  // 4. Guiñada: modelo de bicicleta limitado por el agarre (subviraje en curvas rápidas)
+  let yawRateRad = 0;
   if (absSpeed > 0.15) {
     const directionSign = state.speedMps >= 0 ? 1 : -1;
-    const lowSpeedFactor = Math.min(absSpeed / 6.5, 1.0);
-    const highSpeedStability = 1.0 - Math.min(absSpeed / (MAX_FORWARD_MPS * 1.15), 0.58);
-    const driftTurnBoost = canDrift ? 1.52 : 1.0;
-
-    // Max ~125 deg/s in tight urban turns, smooth at highway speeds
-    const yawRateDegPerSec =
-      steerInput * 128 * lowSpeedFactor * highSpeedStability * driftTurnBoost * directionSign;
-
-    state.headingDeg = (state.headingDeg + yawRateDegPerSec * dt + 360) % 360;
+    const WHEELBASE = 2.7;
+    const delta = state.steerAngleRad * (canDrift ? 1.5 : 1);
+    const lowSpeedFactor = Math.min(absSpeed / 3.0, 1.0);
+    const wanted = (absSpeed * Math.tan(delta)) / WHEELBASE;
+    const gripLat = canDrift ? 15.5 : 10.5;                       // m/s² de agarre lateral (~1,1 g)
+    const maxYaw = gripLat / Math.max(absSpeed, 4);
+    yawRateRad = Math.max(-maxYaw, Math.min(maxYaw, wanted)) * lowSpeedFactor * directionSign;
+    state.headingDeg = (state.headingDeg + yawRateRad * RAD_TO_DEG * dt + 360) % 360;
+  }
+  state.yawRate = damp(state.yawRate, yawRateRad, 14, dt);
+  state.latAccel = state.yawRate * state.speedMps;
+  // Deslizamiento natural al pedir más de lo que da el agarre
+  if (!canDrift) {
+    const slipNat = Math.max(-0.07, Math.min(0.07, state.latAccel * 0.0065));
+    state.driftSlipRad = damp(state.driftSlipRad, slipNat, 6, dt);
   }
 
   // 5. Move along velocity heading (heading + drift slip offset so car visibly slides sideways!)
@@ -151,12 +171,11 @@ export function stepCarPhysics(
   state.wheelSpinRad = (state.wheelSpinRad + (state.speedMps * dt) / WHEEL_RADIUS_M) % (Math.PI * 200);
 
   const longAccel = (state.speedMps - prevSpeed) / dt;
-  const targetPitch = Math.max(-0.042, Math.min(0.036, -longAccel * 0.0014));
-  const lateralG = steerInput * Math.min(absSpeed / 22, 1.3) * (canDrift ? 1.35 : 1.0);
-  const targetRoll = Math.max(-0.055, Math.min(0.055, lateralG * 0.038));
+  const targetPitch = Math.max(-0.042, Math.min(0.036, -longAccel * 0.0016));
+  const targetRoll = Math.max(-0.075, Math.min(0.075, state.latAccel * 0.0055));
 
-  state.bodyPitchRad = damp(state.bodyPitchRad, targetPitch, 9.5, dt);
-  state.bodyRollRad = damp(state.bodyRollRad, targetRoll, 9.5, dt);
+  state.bodyPitchRad = damp(state.bodyPitchRad, targetPitch, 6.5, dt);
+  state.bodyRollRad = damp(state.bodyRollRad, targetRoll, 6.5, dt);
 
   // 7. Derived telemetry: km/h, gear, RPM, brake/drift intensities
   state.speedKmh = Math.abs(state.speedMps) * 3.6;

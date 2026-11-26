@@ -61,6 +61,14 @@ export interface CarState {
   brakeIntensity: number;
   /** Smoothly interpolated intensity [0..1] for drift smoke */
   driftIntensity: number;
+  /** Dirección analógica [-1..1]: sube y baja progresivamente con las teclas */
+  steerCmd: number;
+  /** Velocidad de guiñada (rad/s, + = giro a la derecha) */
+  yawRate: number;
+  /** Aceleración lateral (m/s², + = hacia la derecha) */
+  latAccel: number;
+  /** Sacudida de cámara por impactos [0..1] */
+  shake: number;
 }
 
 export interface HudTelemetry {
