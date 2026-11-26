@@ -71,6 +71,8 @@ export class WorldScene {
   private skyTime = 0;
   private loader = new GLTFLoader();
   public loadedCount = 0;
+  private streets = new Map<string, [string, number[][]][]>();
+  private lastStreet = '';
   private camClock = 0;
   private camRoll = 0;
   private groundPitch = 0;
@@ -241,6 +243,7 @@ export class WorldScene {
       this.addLamps(lt, (col.lamps ?? []) as [number, number, number, number?][]);
       this.scene.add(lt.group);
       this.tiles.set(key, lt);
+      this.streets.set(key, (col.streets ?? []) as [string, number[][]][]);
       this.registerDecks(key, (col.decks ?? []) as { w: number; p: [number, number, number][] }[]);
       this.collision?.addTile(
         key,
@@ -299,6 +302,28 @@ export class WorldScene {
     return best;
   }
 
+  /** Nombre de la calle por la que va el coche (la más cercana a menos de 14 m; con histéresis para que no parpadee). */
+  streetAt(x: number, z: number): string {
+    const tx = Math.floor(x / 1000), tz = Math.floor(z / 1000);
+    let best = this.lastStreet ? 18 : 14, name = '';
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      const arr = this.streets.get(`${tx + dx}_${tz + dz}`);
+      if (!arr) continue;
+      for (const [nm, pts] of arr) {
+        const bias = nm === this.lastStreet ? 4 : 0;           // se prefiere seguir en la misma calle
+        for (let i = 0; i < pts.length - 1; i++) {
+          const ax = pts[i][0], az = pts[i][1], bx = pts[i + 1][0], bz = pts[i + 1][1];
+          const ex = bx - ax, ez = bz - az, l2 = ex * ex + ez * ez;
+          const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / l2)) : 0;
+          const d = Math.hypot(x - (ax + ex * t), z - (az + ez * t)) - bias;
+          if (d < best) { best = d; name = nm; }
+        }
+      }
+    }
+    this.lastStreet = name;
+    return name;
+  }
+
   private unloadTile(key: string) {
     const lt = this.tiles.get(key);
     if (!lt) return;
@@ -311,6 +336,7 @@ export class WorldScene {
     lt.materials.forEach((m) => m.dispose());
     this.collision?.removeTile(key);
     this.unregisterDecks(key);
+    this.streets.delete(key);
     this.tiles.delete(key);
     this.loadedCount = this.tiles.size;
   }

@@ -317,7 +317,12 @@ export default function App() {
           rpm: state.rpm,
           isBraking: state.isBraking,
           isDrifting: state.isDrifting,
-          zoneName: getNearestAlicanteZone(state.lat, state.lng),
+          zoneName: (() => {
+            const zone = getNearestAlicanteZone(state.lat, state.lng);
+            const pl = toLocal(state.lat, state.lng);
+            const street = world.streetAt(pl.x, pl.z);
+            return street ? `${street} · ${zone}` : zone;
+          })(),
           headingDeg: state.headingDeg,
           lat: state.lat,
           lng: state.lng,

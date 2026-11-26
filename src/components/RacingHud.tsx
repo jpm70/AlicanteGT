@@ -115,7 +115,7 @@ export const RacingHud: React.FC<RacingHudProps> = ({
               isLightDay ? 'text-slate-600' : 'text-slate-400'
             }`}
           >
-            <span className="max-w-[230px] truncate sm:max-w-[320px]">{telemetry.zoneName}</span>
+            <span className="max-w-[280px] truncate sm:max-w-[460px]">{telemetry.zoneName}</span>
             <span aria-hidden="true">·</span>
             <span className="whitespace-nowrap">Alicante</span>
           </div>

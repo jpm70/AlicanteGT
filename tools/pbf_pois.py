@@ -16,13 +16,21 @@ SERV = {"hairdresser", "beauty", "laundry", "dry_cleaning", "post_office", "copy
 FASHION = {"clothes", "shoes", "jewelry", "fashion", "bag", "boutique", "tailor", "fashion_accessories", "perfumery", "cosmetics"}
 MARKET = {"supermarket", "convenience", "mall", "department_store", "variety_store", "kiosk", "tobacco", "newsagent", "books", "stationery", "gift", "florist", "toys", "sports", "bicycle", "furniture", "hardware", "pet", "general"}
 LODGE = {"hotel", "hostel", "guest_house", "apartment", "motel"}
+EDU = {"school", "language_school", "music_school", "driving_school", "training", "college", "kindergarten", "university", "dancing_school", "prep_school", "tutoring", "educational_institution", "research_institute"}
+GYM = {"fitness_centre", "sports_centre", "dance", "yoga", "swimming_pool", "pitch"}
+SKIP_AMENITY = {"parking", "bench", "toilets", "bicycle_parking", "waste_basket", "shelter", "fountain", "post_box", "recycling", "parking_entrance", "parking_space", "bicycle_rental", "charging_station", "taxi", "bus_station", "drinking_water", "clock", "vending_machine", "grave_yard", "place_of_worship", "motorcycle_parking", "waste_disposal", "bbq", "telephone", "atm"}
 CULT = {"theatre", "cinema", "museum", "gallery", "arts_centre", "nightclub", "casino", "library"}
 
 
 def cat_of(tags):
-    for k in ("amenity", "shop", "tourism", "office", "craft"):
+    for k in ("amenity", "shop", "tourism", "office", "craft", "leisure", "healthcare"):
         v = tags.get(k)
         if not v: continue
+        if v in EDU: return "edu", v
+        if k == "leisure":
+            if v in GYM: return "serv", v
+            continue
+        if k == "healthcare": return "health", v
         if v in FOOD: return "food", v
         if v in HEALTH: return "health", v
         if v in MONEY or k == "office": return "money", v
@@ -31,6 +39,7 @@ def cat_of(tags):
         if v in SERV: return "serv", v
         if v in FASHION: return "fashion", v
         if v in MARKET or k == "shop": return "market", v
+        if k == "amenity" and v not in SKIP_AMENITY: return "serv", v
     return None, None
 
 
@@ -51,7 +60,7 @@ class H(osmium.SimpleHandler):
 
 
 h = H()
-fp = osmium.FileProcessor(PBF).with_locations().with_filter(osmium.filter.KeyFilter("shop", "amenity", "tourism", "office", "craft"))
+fp = osmium.FileProcessor(PBF).with_locations().with_filter(osmium.filter.KeyFilter("shop", "amenity", "tourism", "office", "craft", "leisure", "healthcare"))
 for o in fp:
     if o.is_node():
         t = {x.k: x.v for x in o.tags}
