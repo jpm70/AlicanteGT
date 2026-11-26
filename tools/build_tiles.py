@@ -486,8 +486,28 @@ def build_tile(args):
     mosaic = unary_union(mosaic_geoms).buffer(25).buffer(-25).difference(roads) if mosaic_geoms else Polygon()   # cierra el hueco del edificio quitado
     walk = unary_union([walk, sidew] + plaza_geoms).difference(mosaic)
     dk = build_decks(deck_ways, hf, (x0, z0, x1, z1), roads)
-    if dk["hole"] is not None:                       # trincheras de túnel: se abre el suelo
-        roads = roads.difference(dk["hole"]); walk = walk.difference(dk["hole"]); mosaic = mosaic.difference(dk["hole"])
+    hole_eff = dk["hole"]
+    if dk["hole"] is not None:
+        # las calles que cruzan la trinchera se mantienen a nivel del suelo como paso superior (con su cara inferior);
+        # el resto de la trinchera se abre
+        _surf = unary_union([g_ for g_ in (roads, walk) if not g_.is_empty]) if (not roads.is_empty or not walk.is_empty) else Polygon()
+        cross = _surf.intersection(dk["hole"]) if not _surf.is_empty else Polygon()
+        if not cross.is_empty:
+            hole_eff = dk["hole"].difference(cross.buffer(0.15))
+            under = []
+            for sub in polys_of(cross):
+                if sub.area < 3: continue
+                ys = hf([c_[0] for c_ in sub.exterior.coords], [c_[1] for c_ in sub.exterior.coords])
+                m_ = tri_mesh(sub.buffer(0.1), float(np.mean(ys)) - 0.75, hexrgb(0x7a776f))
+                if m_ is not None:
+                    Vm = np.asarray(m_.vertices); Fm = np.asarray(m_.faces)[:, ::-1]       # cara inferior
+                    under.append((Vm, Fm, np.tile([122, 119, 111, 255], (len(Vm), 1)).astype(np.uint8)))
+            if under:
+                sv, sf, sc_ = join_parts(under)
+                old_ = dk["parts"]["Struct"]
+                if old_ is None: dk["parts"]["Struct"] = (sv, sf, sc_.astype(np.uint8))
+                else: dk["parts"]["Struct"] = (np.vstack([old_[0], sv]), np.vstack([old_[1], sf + len(old_[0])]), np.vstack([old_[2], sc_.astype(np.uint8)]))
+        roads = roads.difference(hole_eff); walk = walk.difference(hole_eff); mosaic = mosaic.difference(hole_eff)
 
     # --- mar, muelles, parques ---
     sea = G["SEA"].intersection(tbox)
@@ -507,7 +527,7 @@ def build_tile(args):
     sea_free = sea.difference(piers.buffer(0.2)) if not sea.is_empty else sea
     parks = unary_union(park_geoms).difference(roads).difference(sea_free) if park_geoms else Polygon()
     land = tbox.difference(G["SEA"]); land = unary_union([land, piers.intersection(tbox)])
-    if dk["hole"] is not None: land = land.difference(dk["hole"]); parks = parks.difference(dk["hole"])
+    if hole_eff is not None: land = land.difference(hole_eff); parks = parks.difference(hole_eff)
     roads_t = roads.intersection(tbox).difference(sea_free)
     walk_t = walk.intersection(tbox).difference(sea_free)
     mosaic_t = mosaic.intersection(tbox).difference(sea_free)
