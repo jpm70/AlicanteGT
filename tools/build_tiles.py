@@ -863,28 +863,68 @@ def build_castle():
     outer = area.simplify(4.0)
     parts, obst = [], []
     stone = hexrgb(0xcdb386); stone2 = hexrgb(0xc2a678); keepc = hexrgb(0xd9c398)
-    ring = list(outer.exterior.coords); perim = outer.exterior.length
-    segs = max(1, int(perim / 4.0))
-    for i in range(segs):
-        pa = outer.exterior.interpolate(i * perim / segs); pb = outer.exterior.interpolate((i + 1) * perim / segs)
-        ha, hb = float(hf(pa.x, pa.y)), float(hf(pb.x, pb.y)); hm = (ha + hb) / 2
-        L = math.hypot(pb.x - pa.x, pb.y - pa.y)
+    dark = [168, 140, 100, 255]; lite = [214, 190, 146, 255]; ocre = [196, 164, 116, 255]
+    ccw = outer.exterior.is_ccw
+    perim = outer.exterior.length
+    STEP = 3.0
+    n = max(8, int(perim / STEP))
+    P_ = [outer.exterior.interpolate(i * perim / n) for i in range(n)]
+    gs = np.array([float(hf(p.x, p.y)) for p in P_])
+    k = 4
+    gsm = np.array([np.mean([gs[(i + j) % n] for j in range(-k, k + 1)]) for i in range(n)])      # cota suavizada: la coronación sigue la ladera sin escalones
+    wm = _Mesh()
+    for i in range(n):
+        j = (i + 1) % n
+        ax, az = P_[i].x, P_[i].y; bx, bz = P_[j].x, P_[j].y
+        dx, dz = bx - ax, bz - az; L = math.hypot(dx, dz)
         if L < 0.2: continue
-        ang = -math.atan2(pb.y - pa.y, pb.x - pa.x)
-        parts.append(box_at((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, min(ha, hb) - 2.5, hm + 6.0, L + 0.25, 2.2, ang, stone))
-        for k in (0.25, 0.75):
-            parts.append(box_at(pa.x + (pb.x - pa.x) * k, pa.y + (pb.y - pa.y) * k, hm + 6.0, hm + 7.2, 1.4, 2.3, ang, stone))
-    last = None
-    for (x, z) in ring[:-1]:
-        if last is None or math.hypot(x - last[0], z - last[1]) > 45:
-            g = float(hf(x, z))
-            parts.append(box_at(x, z, g - 2.5, g + 11.0, 6.0, 6.0, 0.4, stone2))
-            parts.append(box_at(x, z, g + 11.0, g + 12.3, 6.6, 6.6, 0.4, stone))
-            last = (x, z)
+        tx_, tz_ = dx / L, dz / L
+        nx_, nz_ = (tz_, -tx_) if ccw else (-tz_, tx_)          # hacia fuera
+        ta, tb = gsm[i] + 7.0, gsm[j] + 7.0                      # coronación
+        ya, yb = gs[i] - 3.0, gs[j] - 3.0                        # enterrado en la roca
+        th = 1.1                                                 # grosor mitad
+        want = (nx_, 0.0, nz_)
+        def pt(x, z, y, d): return (x + nx_ * d, y, z + nz_ * d)
+        mid_a = ya + (ta - ya) * 0.42; mid_b = yb + (tb - yb) * 0.42
+        # cara exterior: zócalo oscuro y paño claro; la parte baja con talud
+        wm.quad([pt(ax, az, ya, 1.3), pt(bx, bz, yb, 1.3), pt(bx, bz, mid_b, th), pt(ax, az, mid_a, th)], want, dark)
+        wm.quad([pt(ax, az, mid_a, th), pt(bx, bz, mid_b, th), pt(bx, bz, tb, th), pt(ax, az, ta, th)], want, stone if i % 3 else lite)
+        wm.quad([pt(ax, az, ya, -th), pt(bx, bz, yb, -th), pt(bx, bz, tb - 1.0, -th), pt(ax, az, ta - 1.0, -th)], (-nx_, 0.0, -nz_), stone2)
+        wm.quad([pt(ax, az, ta, th), pt(bx, bz, tb, th), pt(bx, bz, tb, -th), pt(ax, az, ta, -th)], (0, 1, 0), ocre)           # adarve
+        # parapeto interior y almenas
+        wm.quad([pt(ax, az, ta - 1.0, -th), pt(bx, bz, tb - 1.0, -th), pt(bx, bz, tb + 0.6, -th), pt(ax, az, ta + 0.6, -th)], (-nx_, 0.0, -nz_), stone2)
+        if i % 2 == 0:
+            cxm, czm = (ax + bx) / 2 + nx_ * 0.75, (az + bz) / 2 + nz_ * 0.75; yy = (ta + tb) / 2
+            parts.append(box_at(cxm, czm, yy, yy + 1.25, 1.3, 0.6, -math.atan2(tz_, tx_), lite))
+    wv = wm.out()
+    if wv is not None: parts.append(wv)
+    # torres en los quiebros marcados y cada ~38 m
+    since = 0.0
+    for i in range(n):
+        j = (i + 1) % n; h_ = (i - 1) % n
+        a1 = math.atan2(P_[i].y - P_[h_].y, P_[i].x - P_[h_].x); a2 = math.atan2(P_[j].y - P_[i].y, P_[j].x - P_[i].x)
+        turn = abs((a2 - a1 + math.pi) % (2 * math.pi) - math.pi)
+        since += STEP
+        if turn > 0.35 or since > 38:
+            since = 0.0
+            x, z = P_[i].x, P_[i].y; g = gs[i]; top = gsm[i] + 11.5; ang = -a2
+            parts.append(box_at(x, z, g - 3.0, top, 5.8, 5.8, ang, stone2))
+            parts.append(box_at(x, z, top, top + 1.2, 6.6, 6.6, ang, lite))
+            for dxm, dzm in ((-2.7, -2.7), (2.7, -2.7), (2.7, 2.7), (-2.7, 2.7)):
+                parts.append(box_at(x + dxm * math.cos(a2) - dzm * math.sin(a2), z + dxm * math.sin(a2) + dzm * math.cos(a2), top + 1.2, top + 2.3, 1.4, 1.4, ang, lite))
+            if (i // 4) % 3 == 0: parts.append(pyramid_at(x, z, top + 1.2, 2.6, 3.2, hexrgb(0xb2593a), ang))
     rp = outer.representative_point(); hh = float(hf(rp.x, rp.y))
     parts.append(box_at(rp.x, rp.y, hh - 1.0, hh + 17.0, 11.0, 11.0, 0.3, keepc))
     parts.append(box_at(rp.x, rp.y, hh + 17.0, hh + 18.4, 12.2, 12.2, 0.3, stone))
     parts.append(box_at(rp.x, rp.y, hh + 18.4, hh + 22.0, 5.0, 5.0, 0.3, stone2))
+    inner = outer.buffer(-16)
+    if not inner.is_empty:
+        pts_in = [(rp.x + 22, rp.y + 6), (rp.x - 24, rp.y - 8), (rp.x + 4, rp.y + 24), (rp.x - 8, rp.y - 26)]
+        for qi, (qx, qz) in enumerate(pts_in):
+            if not inner.contains(Point(qx, qz)): continue
+            g = float(hf(qx, qz)); sz = 9 + (qi % 2) * 4
+            parts.append(box_at(qx, qz, g - 1.0, g + 6.5, sz, sz * 0.7, 0.3 + qi * 0.5, stone2))
+            parts.append(box_at(qx, qz, g + 6.5, g + 7.1, sz + 0.8, sz * 0.7 + 0.8, 0.3 + qi * 0.5, hexrgb(0xa85a3c)))
     obst.append({"id": -2, "h": 30, "p": [[round(x, 2), round(z, 2)] for x, z in outer.exterior.coords]})
     return parts, obst
 
