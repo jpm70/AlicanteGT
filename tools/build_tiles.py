@@ -461,9 +461,14 @@ def build_tile(args):
     hw = ways(gather(tx, tz, "highway"))
     road_geoms, walk_geoms, road_lines, plaza_geoms, mosaic_geoms = [], [], [], [], []
     deck_ways = []
+    streets = []
     for e in hw:
         t = e["tags"]; k = t.get("highway"); pts = [P(p) for p in e["geometry"]]
         if not near(pts): continue
+        _nm = t.get("name:es") or t.get("name")
+        if _nm and t.get("area") != "yes" and (k in ROAD_W or k in WALK_W) and t.get("tunnel") != "building_passage":
+            _ls = LineString(pts).simplify(1.5)
+            if _ls.length >= 4: streets.append([_nm, [[round(x_, 1), round(z_, 1)] for x_, z_ in _ls.coords]])
         if t.get("area") == "yes":
             if t.get("highway") in ("pedestrian", "footway") and len(pts) >= 4 and pts[0] == pts[-1]:
                 try: g = make_valid(Polygon(pts)).buffer(0)
@@ -800,7 +805,7 @@ def build_tile(args):
     name = f"{tx}_{tz}"
     has_content = bool(wv or not roads_t.is_empty or not parks_t.is_empty or not land.is_empty)
     write_glb(f"{OUT}/{name}.glb", parts)
-    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"], "trees": trees, "lamps": lamps, "decks": dk["decks"],
+    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"], "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
                "drive": {"x0": x0, "z0": z0, "cell": DC, "nx": n, "nz": n, "bits": bits}}, open(f"{OUT}/{name}.json", "w"))
     ortho = 0
     src = f"{D}ortho_t/{name}.jpg"
@@ -981,6 +986,11 @@ def build_castle():
 def load_pois():
     f = D + "pois.json"
     G["POIS"] = json.load(open(f, encoding="utf-8")) if os.path.exists(f) else []
+    fx = D + "pois_extra.json"                     # comercios que no están en OSM (a mano): {name, cat, lat, lng} o {x, z}
+    if os.path.exists(fx):
+        for q in json.load(open(fx, encoding="utf-8")):
+            if "lat" in q: q["x"] = round((q["lng"] - LNG0) * KLNG, 1); q["z"] = round(-(q["lat"] - LAT0) * KLAT, 1)
+            q.setdefault("sub", ""); G["POIS"].append(q)
 
 
 def init():
