@@ -299,7 +299,8 @@ export default function App() {
       const input = controlsRef.current;
 
       stepCarPhysics(state, input, dt);
-      world.collision?.resolve(state);
+      const impact = world.collision?.resolve(state) ?? 0;
+      if (impact > 0.25 && Math.abs(state.speedMps) > 4) state.shake = Math.min(1, Math.max(state.shake, impact * Math.min(Math.abs(state.speedMps) / 25, 1)));
 
       if (audioRef.current) {
         audioRef.current.update(state.rpm, state.speedKmh, state.driftIntensity, input.throttle);
