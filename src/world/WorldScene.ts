@@ -27,7 +27,7 @@ const CAM: Record<CameraPreset, { dist: number; height: number; look: number; fo
   aerial: { dist: 46, height: 38, look: 8, fov: 55 },
 };
 
-interface TileInfo { tx: number; tz: number; ortho: number; land: boolean }
+interface TileInfo { tx: number; tz: number; ortho: number; land: boolean; signs?: number }
 interface Manifest { tile: number; tx: [number, number]; tz: [number, number]; tiles: TileInfo[] }
 interface DeckSeg { tile: string; ax: number; az: number; ao: number; bx: number; bz: number; bo: number; hw: number }
 interface LoadedTile { key: string; group: THREE.Group; textures: THREE.Texture[]; materials: THREE.Material[] }
@@ -160,13 +160,19 @@ export class WorldScene {
     }
     this.loading.add(key);
     try {
-      const [gltf, col, ortho] = await Promise.all([
+      const [gltf, col, ortho, signTex] = await Promise.all([
         this.loader.loadAsync(`${this.base}world/tiles/${key}.glb`),
         fetch(`${this.base}world/tiles/${key}.json`).then((r) => r.json()),
         info.ortho > 0 ? new THREE.TextureLoader().loadAsync(`${this.base}world/tiles/${key}.jpg`).catch(() => null) : Promise.resolve(null),
+        (info.signs ?? 0) > 0 ? new THREE.TextureLoader().loadAsync(`${this.base}world/tiles/${key}_signs.jpg`).catch(() => null) : Promise.resolve(null),
       ]);
       if (this.tiles.has(key)) return;
       const lt: LoadedTile = { key, group: new THREE.Group(), textures: [], materials: [] };
+      if (signTex) {
+        signTex.colorSpace = THREE.SRGBColorSpace;
+        signTex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+        lt.textures.push(signTex);
+      }
       let orthoTex: THREE.Texture | null = null;
       if (ortho) {
         const maxTex = this.renderer.capabilities.maxTextureSize;
@@ -206,6 +212,12 @@ export class WorldScene {
           const mat = this.makeOrthoMaterial(n, orthoMix[n] ?? 0, orthoTex, info);
           lt.materials.push(mat);
           m.material = mat;
+        } else if (n === 'Signs') {
+          if (!signTex) { m.visible = false; return; }
+          const sm = new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.55, metalness: 0, emissive: new THREE.Color(0xffffff), emissiveMap: signTex, emissiveIntensity: 0.3 });
+          lt.materials.push(sm);
+          m.material = sm;
+          m.castShadow = false;
         } else if (n === 'Walls') {
           m.material = this.wallMat ??= this.makeWallMaterial();
         } else if (n === 'Mosaic') {

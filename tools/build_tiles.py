@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from world_config import *          # LAT0, LNG0, KLAT, KLNG, TILE, X0.., tiles(), tile_box(), ortho_px()
 from world_lib import *
 from world_decks import build_decks, _Mesh
-from world_boats import place_boats, boats_mesh             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
+from world_boats import place_boats, boats_mesh
+from world_signs import place_signs, signs_mesh             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
 
 D = "tools/data/"
 OUT = "public/world/tiles"
@@ -470,6 +471,11 @@ def build_tile(args):
                 (mosaic_geoms if "esplanada" in t.get("name", "").lower() else plaza_geoms).append(g)
             continue
         if t.get("tunnel") == "building_passage": continue
+        if k in ("footway", "pedestrian", "path", "cycleway") and t.get("bridge") not in (None, "", "no") and t.get("area") != "yes":
+            Lf = sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+            if 18 <= Lf <= 200:                                   # pasarela peatonal sobre una vía: se construye como puente estrecho
+                deck_ways.append({"id": e["id"], "k": "footway", "w": 3.0, "pts": pts, "kind": "bridge", "layer": 1, "ow": False, "ln": 0, "foot": True})
+                continue
         br = t.get("bridge") not in (None, "", "no"); tu = t.get("tunnel") == "yes"
         if tu and k not in ROAD_W: continue
         if k in ROAD_W:
@@ -752,6 +758,13 @@ def build_tile(args):
         if w is not None: parts.append(("Water", np.asarray(w.vertices), np.asarray(w.faces), np.asarray(w.visual.vertex_colors), None))
     bm = boats_mesh(boats, -0.45) if boats else None
     if bm is not None: parts.append(("Boats", bm[0], bm[1], bm[2], None))
+    nsigns = 0
+    if G.get("POIS") and bl:
+        sg = place_signs(G["POIS"], bl, roads_near, hf, (x0, z0, x1, z1))
+        os.makedirs(OUT, exist_ok=True)
+        sm = signs_mesh(sg, f"{OUT}/{tx}_{tz}_signs.jpg")
+        if sm is not None:
+            parts.append(("Signs", sm[0], sm[1], sm[2], sm[3])); nsigns = len(sg)
     if wv: parts.append(("Walls", np.array(wv), np.array(wf), np.array(wc), np.array(wu)))
     dm = det.out()
     if dm is not None: parts.append(("Detail", dm[0], dm[1], dm[2], None))
@@ -794,7 +807,7 @@ def build_tile(args):
     if os.path.exists(src) and not land.is_empty and (not roads_t.is_empty or wv):
         shutil.copyfile(src, f"{OUT}/{name}.jpg"); ortho = ortho_px(tx, tz)
     return {"tx": tx, "tz": tz, "glb": os.path.getsize(f"{OUT}/{name}.glb") // 1024, "buildings": len(collid), "trees": len(trees),
-            "ortho": ortho, "styles": styles, "land": not land.is_empty}
+            "ortho": ortho, "styles": styles, "land": not land.is_empty, "signs": nsigns}
 
 
 # ---------- hitos ----------
@@ -965,8 +978,13 @@ def build_castle():
     return parts, obst
 
 
+def load_pois():
+    f = D + "pois.json"
+    G["POIS"] = json.load(open(f, encoding="utf-8")) if os.path.exists(f) else []
+
+
 def init():
-    load_dem(); load_catastro(); G["SEA"] = build_sea()
+    load_dem(); load_catastro(); load_pois(); G["SEA"] = build_sea()
 
 
 def main():
@@ -984,7 +1002,7 @@ def main():
     if os.path.exists(mf) and len(sys.argv) > 1:
         prev = {(t["tx"], t["tz"]): t for t in json.load(open(mf))["tiles"]}
     for r in res:
-        prev[(r["tx"], r["tz"])] = {"tx": r["tx"], "tz": r["tz"], "ortho": r["ortho"], "land": r["land"]}
+        prev[(r["tx"], r["tz"])] = {"tx": r["tx"], "tz": r["tz"], "ortho": r["ortho"], "land": r["land"], "signs": r["signs"]}
     load_dem()
     d = {"x0": G["DX0"], "z0": G["DZ0"], "step": G["DST"], "nx": len(G["DXS"]), "nz": len(G["DZS"]), "h": [round(float(v), 1) for v in G["HG"].reshape(-1)]}
     json.dump(d, open("public/world/dem.json", "w"))
