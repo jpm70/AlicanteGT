@@ -117,7 +117,7 @@ export class CollisionWorld {
   }
 
   /** Mantiene el coche sobre calzada/acera: si la nueva posición sale, desliza por un eje o vuelve atrás. */
-  private keepOnRoad(state: CarState, x: number, z: number): { x: number; z: number; blocked: boolean } {
+  private keepOnRoad(state: CarState, x: number, z: number): { x: number; z: number; blocked: boolean; slid?: boolean } {
     const hd = (state.headingDeg * Math.PI) / 180;
     if (!this.hasLast || Math.hypot(x - this.lastX, z - this.lastZ) > 15) {
       this.hasLast = true; this.lastX = x; this.lastZ = z;   // teletransporte / primer frame
@@ -125,9 +125,9 @@ export class CollisionWorld {
     }
     if (this.carFits(x, z, hd)) { this.lastX = x; this.lastZ = z; return { x, z, blocked: false }; }
     if (!this.carFits(this.lastX, this.lastZ, hd)) { this.lastX = x; this.lastZ = z; return { x, z, blocked: false }; }  // ya estaba fuera: no atrapar
-    if (this.carFits(x, this.lastZ, hd)) { this.lastX = x; return { x, z: this.lastZ, blocked: true }; }
-    if (this.carFits(this.lastX, z, hd)) { this.lastZ = z; return { x: this.lastX, z, blocked: true }; }
-    return { x: this.lastX, z: this.lastZ, blocked: true };
+    if (this.carFits(x, this.lastZ, hd)) { this.lastX = x; return { x, z: this.lastZ, blocked: true, slid: true }; }
+    if (this.carFits(this.lastX, z, hd)) { this.lastZ = z; return { x: this.lastX, z, blocked: true, slid: true }; }
+    return { x: this.lastX, z: this.lastZ, blocked: true, slid: false };
   }
 
   reset() { this.hasLast = false; }
@@ -193,7 +193,7 @@ export class CollisionWorld {
     }
     const road = this.keepOnRoad(state, cx, cz);
     if (road.blocked) {
-      impact = Math.max(impact, 0.6);
+      impact = Math.max(impact, road.slid ? 0.03 : 0.5);   // rozar el bordillo apenas frena; chocar de frente sí
       cx = road.x; cz = road.z;
     }
     if (cx !== l.x || cz !== l.z) {
