@@ -84,12 +84,14 @@ def build_decks(deck_ways, hf, tile, roads_ground):
     x0, z0, x1, z1 = tile
     deck = _Mesh(); struct = _Mesh(); glow = _Mesh()
     holes, drive_polys, decks_json, obst, marks = [], [], [], [], []
+    tunnel_zone = []                                   # huella de los túneles: ahí no puede haber árboles, farolas ni coches aparcados
     for w_ in deck_ways:
         w = w_["w"]; S, total = resample(w_["pts"], 3.0)
         if len(S) < 2: continue
         off = offset_fn(w_["kind"], w_["layer"], total, w_.get("foot", False))
         o = [off(s) for (_, _, s) in S]
         drive_polys.append(LineString(w_["pts"]).buffer(w / 2 + 0.2, cap_style=2, join_style=1))
+        if w_["kind"] == "tunnel": tunnel_zone.append(LineString(w_["pts"]).buffer(w / 2 + 1.6, cap_style=1, join_style=1))
         # tangentes y normales
         T = []
         for i in range(len(S)):
@@ -176,5 +178,6 @@ def build_decks(deck_ways, hf, tile, roads_ground):
                 obst.append({"id": -5, "h": 6, "p": [[round(x + 0.95 * math.cos(a * math.pi / 4), 2), round(z + 0.95 * math.sin(a * math.pi / 4), 2)] for a in range(9)]})
     hole = unary_union(holes) if holes else None
     drive = unary_union(drive_polys) if drive_polys else None
+    tzone = unary_union(tunnel_zone) if tunnel_zone else None
     return {"parts": {"Deck": deck.out(), "Struct": struct.out(), "Glow": glow.out()}, "hole": hole, "drive": drive,
-            "decks": decks_json, "obst": obst, "marks": marks}
+            "decks": decks_json, "obst": obst, "marks": marks, "tunnel_zone": tzone}
