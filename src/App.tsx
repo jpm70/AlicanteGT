@@ -5,7 +5,7 @@ import { PlacesPanel, type Place } from './components/PlacesPanel';
 import { MiniMap } from './components/MiniMap';
 import { StartScreen } from './components/StartScreen';
 import { Countdown, FinishCard, RaceHud } from './components/RaceHud';
-import { bearingTo, distM, loadBest, loadMenu, routeKey, saveBest, saveMenu } from './game/race';
+import { bearingTo, distM, loadBest, loadMenu, routeKey, saveBest, saveMenu, startBearing } from './game/race';
 import {
   ALICANTE_LANDMARKS,
   CAR_PAINT_PRESETS,
@@ -105,9 +105,7 @@ function defaultConfig(): RaceConfig {
   };
 }
 
-function resolveBearing(c: RaceConfig): number {
-  return c.bearing === 'auto' ? (c.dest ? bearingTo(c.start.la, c.start.lo, c.dest.la, c.dest.lo) : c.start.b ?? 0) : c.bearing;
-}
+const resolveBearing = startBearing;
 
 export default function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);

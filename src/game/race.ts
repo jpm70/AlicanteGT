@@ -12,6 +12,19 @@ export function bearingTo(la1: number, lo1: number, la2: number, lo2: number): n
   return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
 }
 
+/** Rumbo de salida: el elegido, o (automático) hacia la meta; en una calle, el sentido de la calle más cercano a la meta. */
+export function startBearing(c: Pick<RaceConfig, 'start' | 'dest' | 'bearing'>): number {
+  if (c.bearing !== 'auto') return c.bearing;
+  const toDest = c.dest ? bearingTo(c.start.la, c.start.lo, c.dest.la, c.dest.lo) : null;
+  if (c.start.ax && c.start.b !== undefined) {
+    if (toDest === null) return c.start.b;
+    const alt = (c.start.b + 180) % 360;
+    const diff = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180);
+    return diff(c.start.b, toDest) <= diff(alt, toDest) ? c.start.b : alt;
+  }
+  return toDest ?? c.start.b ?? 0;
+}
+
 export function formatTime(ms: number): string {
   const t = Math.max(0, Math.floor(ms));
   const m = Math.floor(t / 60000), s = Math.floor((t % 60000) / 1000), c = Math.floor((t % 1000) / 10);
