@@ -86,7 +86,8 @@ export interface HudTelemetry {
 }
 
 /** Un sitio elegible como salida o meta. `b` = rumbo por defecto de salida (si lo tiene). */
-export interface PlaceRef { n: string; la: number; lo: number; b?: number; c?: string }
+/** `ax`: `b` es el eje de una calle (vale en cualquiera de sus dos sentidos). */
+export interface PlaceRef { n: string; la: number; lo: number; b?: number; ax?: boolean; c?: string }
 
 /** Lo que se elige en la pantalla de inicio. */
 export interface RaceConfig {

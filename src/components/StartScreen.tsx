@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
-import { Camera, Car, ChevronDown, Compass, Flag, MapPin, Moon, Play, Search, Sun, Sunset, Timer, Users, Volume2, VolumeX, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Camera, Car, ChevronDown, Compass, Flag, House, MapPin, Moon, Play, Search, Sun, Sunset, Timer, Users, Volume2, VolumeX, X } from 'lucide-react';
 import { ALICANTE_LANDMARKS, CAR_PAINT_PRESETS } from '../game/constants';
-import { bearingTo, distM, formatDist, formatTime, loadBest, routeKey } from '../game/race';
+import { loadAddresses, searchAddresses, type Street } from '../game/addresses';
+import { bearingTo, distM, formatDist, formatTime, loadBest, routeKey, startBearing } from '../game/race';
 import type { AtmosphereMode, CameraPreset, PlaceRef, RaceConfig } from '../types/game';
 import { CATS, type Place } from './PlacesPanel';
 
@@ -31,18 +32,21 @@ interface PickerProps {
   options: PlaceRef[];
   emptyLabel?: string;
   placeholder: string;
+  /** resultados extra según lo escrito (direcciones) */
+  extra?: (q: string) => PlaceRef[];
 }
 
 /** Desplegable con buscador para elegir un sitio. */
-function PlacePicker({ value, onChange, options, emptyLabel, placeholder }: PickerProps) {
+function PlacePicker({ value, onChange, options, emptyLabel, placeholder, extra }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const list = useMemo(() => {
     const nq = norm(q.trim());
     const out = nq ? options.filter((o) => norm(o.n).includes(nq) || norm(CATS[o.c ?? '']?.label ?? '').includes(nq)) : options;
-    return out.slice(0, 60);
-  }, [q, options]);
-  const Icon = CATS[value?.c ?? '']?.Icon ?? MapPin;
+    return [...(extra && q.trim() ? extra(q) : []), ...out].slice(0, 60);
+  }, [q, options, extra]);
+  const iconOf = (c?: string) => (c === 'address' ? House : CATS[c ?? '']?.Icon ?? MapPin);
+  const Icon = iconOf(value?.c);
   return (
     <div className="relative">
       <button
@@ -63,7 +67,7 @@ function PlacePicker({ value, onChange, options, emptyLabel, placeholder }: Pick
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Buscar (Luceros, hospital, estación…)"
+              placeholder="Lugar o dirección: «Luceros», «Maisonnave 12»…"
               className="w-full bg-transparent text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
             />
           </div>
@@ -77,14 +81,14 @@ function PlacePicker({ value, onChange, options, emptyLabel, placeholder }: Pick
             )}
             {list.length === 0 && <li className="px-3 py-3 text-xs text-slate-400">Sin resultados.</li>}
             {list.map((o) => {
-              const I = CATS[o.c ?? '']?.Icon ?? MapPin;
+              const I = iconOf(o.c);
               return (
                 <li key={`${o.n}-${o.la}-${o.lo}`}>
                   <button type="button" onClick={() => { onChange(o); setOpen(false); setQ(''); }} className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left hover:bg-white/10">
                     <I className="h-4 w-4 shrink-0 text-amber-400" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-xs font-medium text-white">{o.n}</span>
-                      <span className="block text-[10px] text-slate-400">{CATS[o.c ?? '']?.label ?? 'Lugar'}</span>
+                      <span className="block text-[10px] text-slate-400">{o.c === 'address' ? 'Dirección' : CATS[o.c ?? '']?.label ?? 'Lugar'}</span>
                     </span>
                   </button>
                 </li>
@@ -138,8 +142,12 @@ export function StartScreen({ config, onChange, places, onStart, ready, onResume
     return out;
   }, [places]);
 
+  const [streets, setStreets] = useState<Street[]>([]);
+  useEffect(() => { void loadAddresses().then(setStreets); }, []);
+  const addrSearch = useMemo(() => (q: string) => searchAddresses(streets, q), [streets]);
+
   const { start, dest } = config;
-  const autoBearing = dest ? bearingTo(start.la, start.lo, dest.la, dest.lo) : start.b ?? 0;
+  const autoBearing = startBearing({ start, dest, bearing: 'auto' });
   const key = routeKey(config);
   const best = loadBest(key);
   const straight = dest ? distM(start.la, start.lo, dest.la, dest.lo) : 0;
@@ -180,7 +188,8 @@ export function StartScreen({ config, onChange, places, onStart, ready, onResume
               value={start}
               onChange={(p) => p && set({ start: p })}
               options={options}
-              placeholder="Elige el punto de salida"
+              extra={addrSearch}
+              placeholder="Elige la salida (lugar o dirección)"
             />
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="mr-1 flex items-center gap-1 text-[11px] text-slate-400"><Compass className="h-3.5 w-3.5" /> Dirección</span>
@@ -200,7 +209,7 @@ export function StartScreen({ config, onChange, places, onStart, ready, onResume
           </Section>
 
           <Section title="Meta y cronómetro" Icon={Flag}>
-            <PlacePicker value={dest} onChange={(p) => set({ dest: p })} options={options} emptyLabel="Sin meta · conducción libre" placeholder="Sin meta · conducción libre" />
+            <PlacePicker value={dest} onChange={(p) => set({ dest: p })} options={options} extra={addrSearch} emptyLabel="Sin meta · conducción libre" placeholder="Sin meta · lugar o dirección" />
             {dest ? (
               <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-300">
                 <span className="flex items-center gap-1"><Timer className="h-3.5 w-3.5 text-amber-400" /> En línea recta: {formatDist(straight)}</span>
