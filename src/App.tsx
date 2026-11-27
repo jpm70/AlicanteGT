@@ -171,6 +171,7 @@ export default function App() {
     lng: INITIAL_VIEW.lng,
     tilesStatus: 'loading',
     tileStatusText: 'Cargando mundo 3D…',
+    damage: 0,
   });
 
   const applyAtmosphereMode = useCallback((nextMode: AtmosphereMode) => {
@@ -415,6 +416,7 @@ export default function App() {
     let frameId = 0;
     let lastTime = performance.now();
     let lastHudUpdate = 0;
+    let lastCrash = 0;
 
     const tick = () => {
       if (disposed) return;
@@ -430,7 +432,13 @@ export default function App() {
       if (ph !== 'menu') {                                  // en el menú el coche queda congelado
         stepCarPhysics(state, input, dt);
         const impact = Math.max(world.collision?.resolve(state) ?? 0, world.traffic.collide(state));
-        if (impact > 0.25 && Math.abs(state.speedMps) > 4) state.shake = Math.min(1, Math.max(state.shake, impact * Math.min(Math.abs(state.speedMps) / 25, 1)));
+        const hard = impact > 0.25 && Math.abs(state.speedMps) > 4;
+        if (hard) {
+          const force = impact * Math.min(Math.abs(state.speedMps) / 25, 1);
+          state.shake = Math.min(1, Math.max(state.shake, force));
+          if (now - lastCrash > 350) { lastCrash = now; state.damage = Math.min(1, state.damage + force * 0.22); audioRef.current?.impact(force); }
+        }
+        audioRef.current?.scrape(!hard && impact > 0.005 && Math.abs(state.speedMps) > 3 ? Math.min(1, Math.abs(state.speedMps) / 25) : 0);
       }
       const dest = sessionRef.current?.dest ?? null;
       if (ph === 'racing' && dest && distM(state.lat, state.lng, dest.la, dest.lo) < FINISH_R) {
@@ -444,7 +452,7 @@ export default function App() {
       }
 
       if (audioRef.current) {
-        audioRef.current.update(state.rpm, state.speedKmh, state.driftIntensity, input.throttle);
+        audioRef.current.update(state.rpm, state.speedKmh, state.driftIntensity, input.throttle, { latAccel: state.latAccel, braking: state.brakeIntensity, damage: state.damage });
       }
 
       world.render(state, dt);
@@ -474,6 +482,7 @@ export default function App() {
           lng: state.lng,
           tilesStatus: tileHealthRef.current.status,
           tileStatusText: tileHealthRef.current.text,
+          damage: state.damage,
         });
       }
 

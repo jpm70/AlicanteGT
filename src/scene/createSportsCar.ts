@@ -547,6 +547,19 @@ export function createSportsCar(
   let nextParticleIdx = 0;
   let smokeSpawnTimer = 0;
 
+  // humo oscuro del capó cuando el coche está muy dañado
+  const hoodMat = track(new THREE.MeshBasicMaterial({ map: smokeTex, transparent: true, opacity: 0, depthWrite: false, color: 0x2a2a2e }));
+  const hoodParticles: DriftParticle[] = [];
+  for (let i = 0; i < 10; i++) {
+    const mat = hoodMat.clone(); track(mat);
+    const mesh = new THREE.Mesh(smokeGeo, mat);
+    mesh.visible = false; root.add(mesh);
+    hoodParticles.push({ mesh, mat, age: 1, life: 0.9, vx: 0, vy: 0, vz: 0 });
+  }
+  let hoodIdx = 0, hoodTimer = 0;
+  let paintHex = initialPaint.hex;
+  const dullColor = new THREE.Color();
+
   let currentAtmosphere: AtmosphereMode = initialAtmosphere;
 
   const applyAtmosphereEffects = (mode: AtmosphereMode) => {
@@ -597,6 +610,32 @@ export function createSportsCar(
     brakeHaloRight.scale.set(haloScale, haloScale, 1);
     rearRoadGlowMat.opacity = (0.08 + b * 0.46) * (currentAtmosphere === 'day' ? 0.45 : nightBoost);
 
+    // 4b. Daños: la pintura se apaga y, muy tocado, sale humo del capó
+    const dmg = state.damage ?? 0;
+    dullColor.setHex(paintHex).lerp(new THREE.Color(0x3a3a3c), Math.min(0.55, dmg * 0.6));
+    bodyPaintMat.color.copy(dullColor);
+    bodyPaintMat.roughness = Math.min(0.9, 0.28 + dmg * 0.5);
+    if (bodyVisible && dmg > 0.55) {
+      hoodTimer += dt;
+      if (hoodTimer > 0.12 - dmg * 0.07) {
+        hoodTimer = 0;
+        const p = hoodParticles[hoodIdx]; hoodIdx = (hoodIdx + 1) % hoodParticles.length;
+        p.age = 0; p.life = 0.8 + Math.random() * 0.5;
+        p.mesh.position.set((Math.random() - 0.5) * 0.5, 0.8, CAR.frontZ + 0.5);
+        p.mesh.scale.setScalar(0.35); p.mesh.visible = true;
+        p.vx = (Math.random() - 0.5) * 0.4; p.vy = 0.9 + Math.random() * 0.6; p.vz = 0.9 + Math.random() * 0.8 + Math.max(0, state.speedMps) * 0.12;
+      }
+    }
+    for (const p of hoodParticles) {
+      if (!p.mesh.visible) continue;
+      p.age += dt;
+      if (p.age >= p.life) { p.mesh.visible = false; continue; }
+      const t = p.age / p.life;
+      p.mesh.position.x += p.vx * dt; p.mesh.position.y += p.vy * dt; p.mesh.position.z += p.vz * dt;
+      p.mesh.scale.setScalar(0.35 + t * 1.5);
+      p.mat.opacity = (1 - t) * 0.5;
+    }
+
     // 5. Drift tire smoke puffs from rear tires (disabled in cockpit view)
     if (bodyVisible && state.driftIntensity > 0.25) {
       smokeSpawnTimer += dt;
@@ -636,6 +675,7 @@ export function createSportsCar(
   };
 
   const setPaint = (paint: CarPaintPreset) => {
+    paintHex = paint.hex;
     bodyPaintMat.color.setHex(paint.hex);
     caliperMat.color.setHex(paint.caliperHex);
     underglowMat.color.setHex(paint.underglowHex);
@@ -657,6 +697,7 @@ export function createSportsCar(
       for (let i = 0; i < particles.length; i++) {
         particles[i].mesh.visible = false;
       }
+      for (const p of hoodParticles) p.mesh.visible = false;
     }
   };
 

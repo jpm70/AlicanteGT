@@ -69,6 +69,8 @@ export interface CarState {
   latAccel: number;
   /** Sacudida de cámara por impactos [0..1] */
   shake: number;
+  /** Daños acumulados por choques [0..1] (0 = como nuevo) */
+  damage: number;
 }
 
 export interface HudTelemetry {
@@ -83,6 +85,7 @@ export interface HudTelemetry {
   lng: number;
   tilesStatus: 'loading' | 'ready' | 'error';
   tileStatusText: string;
+  damage: number;
 }
 
 /** Un sitio elegible como salida o meta. `b` = rumbo por defecto de salida (si lo tiene). */

@@ -127,6 +127,11 @@ export const RacingHud: React.FC<RacingHudProps> = ({
             <span className="whitespace-nowrap">
               {telemetry.lat.toFixed(4)}, {telemetry.lng.toFixed(4)}
             </span>
+            {telemetry.damage > 0.04 && (
+              <span className="whitespace-nowrap font-semibold text-red-500" title="Daños del coche (R reinicia y repara)">
+                · Daños {Math.round(telemetry.damage * 100)} %
+              </span>
+            )}
             <span aria-hidden="true">·</span>
             <span
               className={`whitespace-nowrap ${

@@ -180,14 +180,17 @@ export class CollisionWorld {
     const fx = Math.sin(h), fz = -Math.cos(h); // adelante (x este, z sur)
     let impact = 0;
     let cx = l.x, cz = l.z;
+    const vs = state.speedMps >= 0 ? 1 : -1;                  // sentido de la marcha
     for (let it = 0; it < 2; it++) {
       for (const off of CIRCLE_OFFSETS) {
         const p = { x: cx + fx * off, z: cz + fz * off };
         const hit = this.pushOut(p, CAR_R);
         if (hit) {
           cx = p.x - fx * off; cz = p.z - fz * off;
-          const along = Math.abs(hit.nx * fx + hit.nz * fz);
-          impact = Math.max(impact, along);
+          // solo cuenta como choque (y frena) si el coche va CONTRA el obstáculo; si se aleja, solo se le saca de dentro:
+          // así se puede salir marcha atrás (o hacia delante) de un árbol o una pared sin quedarse clavado
+          const into = -(hit.nx * fx + hit.nz * fz) * vs;
+          impact = Math.max(impact, Math.max(0, Math.min(1, into)));
         }
       }
     }

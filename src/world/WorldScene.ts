@@ -14,10 +14,11 @@ import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider, type DriveMask } from './collision';
 import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
 import { createPalmAssets, type PalmAssets } from './palms';
-import { Traffic, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
+import { Traffic, type BusRoute, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
 import { Pedestrians } from './pedestrians';
 import { Cyclists } from './cyclists';
 import { Trams, type TramData } from './trams';
+import { createFoliageGeometry, createFoliageMaterial } from './foliage';
 import { Signals } from './signals';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
@@ -147,7 +148,7 @@ export class WorldScene {
   private bloom: UnrealBloomPass | null = null;
   private gtao: GTAOPass | null = null;
   private grade: ShaderPass | null = null;
-  private wallUniforms = { uMask: { value: null as THREE.Texture | null }, uNight: { value: 0 } };
+  private wallUniforms = { uMask: { value: null as THREE.Texture | null }, uHeight: { value: null as THREE.Texture | null }, uNight: { value: 0 }, uRelief: { value: 2.2 } };
 
   constructor(
     private container: HTMLElement,
@@ -331,6 +332,7 @@ export class WorldScene {
     ]);
     this.manifest = manifest;
     fetch(`${base}world/tram.json`).then((r) => r.json()).then((d: TramData) => this.trams.setData(d)).catch(() => undefined);
+    fetch(`${base}world/bus_routes.json`).then((r) => r.json()).then((d: { routes: BusRoute[] }) => this.traffic.setBusRoutes(d.routes)).catch(() => undefined);
     for (const t of manifest.tiles) this.infos.set(`${t.tx}_${t.tz}`, t);
     setDem(dem);
     this.collision = new CollisionWorld();
@@ -625,18 +627,30 @@ export class WorldScene {
 
   /** Material de muros: atlas de fachadas (estilo en u/1000, plantas en v) + ventanas iluminadas de noche. */
   private makeWallMaterial(): THREE.MeshStandardMaterial {
-    const { map, mask } = createFacadeAtlas();
+    const { map, mask, height } = createFacadeAtlas();
     this.wallUniforms.uMask.value = mask;
+    this.wallUniforms.uHeight.value = height;
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, map, roughness: 0.88, metalness: 0 });
     const u = this.wallUniforms;
     mat.onBeforeCompile = (sh) => {
       sh.uniforms.uMask = u.uMask;
+      sh.uniforms.uHeight = u.uHeight;
+      sh.uniforms.uRelief = u.uRelief;
       sh.uniforms.uNight = u.uNight;
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
           uniform sampler2D uMask;
+          uniform sampler2D uHeight;
+          uniform float uRelief;
           uniform float uNight;
-          float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
+          float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          vec3 reliefNormal(vec3 pos, vec3 n, vec2 dH, float fd) {
+            vec3 sx = normalize(dFdx(pos)), sy = normalize(dFdy(pos));
+            vec3 r1 = cross(sy, n), r2 = cross(n, sx);
+            float det = dot(sx, r1) * fd;
+            vec3 grad = sign(det) * (dH.x * r1 + dH.y * r2);
+            return normalize(abs(det) * n - grad);
+          }`)
         .replace('#include <map_fragment>', `
           float stl = floor(vMapUv.x / 1000.0 + 0.0001);
           vec2 cuv = vec2(vMapUv.x - stl * 1000.0, vMapUv.y);
@@ -649,9 +663,18 @@ export class WorldScene {
           vec4 fac = textureGrad(map, auv, gx, gy);
           float win = textureGrad(uMask, auv, gx, gy).r;
           diffuseColor *= vec4(fac.rgb, 1.0);
+          float hC = textureGrad(uHeight, auv, gx, gy).r;
+          float hX = textureGrad(uHeight, auv + gx, gx, gy).r;
+          float hY = textureGrad(uHeight, auv + gy, gx, gy).r;
+          vec2 dRelief = vec2(hX - hC, hY - hC) * uRelief;
+          float recess = 1.0 - smoothstep(0.05, 0.35, hC);                              // dentro del hueco de la ventana: más oscuro
+          float ledge = smoothstep(0.62, 0.9, hC);                                      // molduras y balcones: algo más claros
+          diffuseColor.rgb *= (1.0 - 0.18 * recess) * (1.0 + 0.07 * ledge);
           float lit = step(0.55, h21(floor(cuv) + vec2(stl * 7.0, 3.0)));
           totalEmissiveRadiance += win * lit * uNight * vec3(1.0, 0.74, 0.4) * 0.8;
-        `);
+        `)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+          normal = reliefNormal(-vViewPosition, normal, dRelief, faceDirection);`);
     };
     return mat;
   }
@@ -715,6 +738,12 @@ export class WorldScene {
   }
 
   /** Árboles y palmeras instanciados (posiciones reales de OSM + arbolado de calle). */
+  private leafMat: THREE.MeshStandardMaterial | null = null;
+  private leafGeo: THREE.BufferGeometry | null = null;
+
+  private leafCrownGeometry(): THREE.BufferGeometry { return (this.leafGeo ??= createFoliageGeometry()); }
+  private leafMaterial(): THREE.MeshStandardMaterial { return (this.leafMat ??= createFoliageMaterial()); }
+
   private addTrees(lt: LoadedTile, trees: [number, number, number][]) {
     const palms = trees.filter((t) => t[2] === 1);
     const broad = trees.filter((t) => t[2] === 0);
@@ -731,17 +760,21 @@ export class WorldScene {
     };
     // árboles de hoja ancha: tronco + copa
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f35, roughness: 0.95 });
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.9 });
-    lt.materials.push(trunkMat, leafMat);
+    const leafMat = this.leafMaterial();
+    lt.materials.push(trunkMat);
     const bt = mk(new THREE.CylinderGeometry(0.12, 0.2, 2.6, 6), trunkMat, broad.length, true);
-    const bc = mk(new THREE.IcosahedronGeometry(1.9, 1), leafMat, broad.length, true);
+    const bc = mk(this.leafCrownGeometry(), leafMat, broad.length, true);
     broad.forEach(([x, z], i) => {
       const sc = 0.8 + ((i * 37) % 10) / 25;
       const y = heightAt(x, z);
       m.compose(new THREE.Vector3(x, y + 1.3, z), q, one); bt.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, y + 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
+      const rq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ((i * 53) % 100) / 100 * 6.28);
+      m.compose(new THREE.Vector3(x, y + 3.6 * sc, z), rq, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
+      const tone = 0.82 + ((i * 29) % 40) / 100;
+      bc.setColorAt(i, new THREE.Color(tone * (0.95 + ((i * 7) % 10) / 100), tone, tone * (0.85 + ((i * 13) % 20) / 100)));
     });
     [bt, bc].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+    if (bc.instanceColor) bc.instanceColor.needsUpdate = true;
 
     // palmeras: Phoenix canariensis (60 %) y Washingtonia (40 %), con altura, inclinación y color propios
     const assets = (this.palmAssets ??= createPalmAssets());

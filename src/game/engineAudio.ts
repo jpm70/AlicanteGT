@@ -11,6 +11,10 @@ export class EngineAudioSynth {
   private engineGain: GainNode | null = null;
   private screechGain: GainNode | null = null;
   private screechFilter: BiquadFilterNode | null = null;
+  private rollGain: GainNode | null = null;
+  private rollFilter: BiquadFilterNode | null = null;
+  private scrapeGain: GainNode | null = null;
+  private noise: AudioBuffer | null = null;
   private enabled = false;
 
   public setEnabled(next: boolean): void {
@@ -95,6 +99,24 @@ export class EngineAudioSynth {
     screechGain.connect(masterGain);
     noiseSource.start();
 
+    // Rodadura: ruido grave que sube con la velocidad (asfalto y neumáticos)
+    const rollSrc = ctx.createBufferSource();
+    rollSrc.buffer = noiseBuffer; rollSrc.loop = true;
+    const rollFilter = ctx.createBiquadFilter();
+    rollFilter.type = 'lowpass'; rollFilter.frequency.value = 300; rollFilter.Q.value = 0.7;
+    const rollGain = ctx.createGain(); rollGain.gain.value = 0;
+    rollSrc.connect(rollFilter); rollFilter.connect(rollGain); rollGain.connect(masterGain); rollSrc.start();
+
+    // Roce de chapa contra bordillos y paredes
+    const scrapeSrc = ctx.createBufferSource();
+    scrapeSrc.buffer = noiseBuffer; scrapeSrc.loop = true; scrapeSrc.playbackRate.value = 0.8;
+    const scrapeFilter = ctx.createBiquadFilter();
+    scrapeFilter.type = 'bandpass'; scrapeFilter.frequency.value = 2600; scrapeFilter.Q.value = 1.4;
+    const scrapeGain = ctx.createGain(); scrapeGain.gain.value = 0;
+    scrapeSrc.connect(scrapeFilter); scrapeFilter.connect(scrapeGain); scrapeGain.connect(masterGain); scrapeSrc.start();
+
+    this.noise = noiseBuffer;
+    this.rollGain = rollGain; this.rollFilter = rollFilter; this.scrapeGain = scrapeGain;
     this.ctx = ctx;
     this.masterGain = masterGain;
     this.oscPrimary = oscPrimary;
@@ -105,7 +127,7 @@ export class EngineAudioSynth {
     this.screechGain = screechGain;
   }
 
-  public update(rpm: number, speedKmh: number, driftIntensity: number, throttle: boolean): void {
+  public update(rpm: number, speedKmh: number, driftIntensity: number, throttle: boolean, extra?: { latAccel: number; braking: number; damage: number }): void {
     if (!this.enabled || !this.ctx || !this.oscPrimary || !this.oscHarmonic || !this.engineFilter || !this.engineGain || !this.screechGain || !this.screechFilter) {
       return;
     }
@@ -120,9 +142,44 @@ export class EngineAudioSynth {
     this.engineFilter.frequency.setTargetAtTime(cutoff, now, 0.06);
     this.engineGain.gain.setTargetAtTime(0.18 + clampedRpm * 0.22 + (throttle ? 0.08 : 0), now, 0.06);
 
-    const screechLevel = driftIntensity * Math.min(1, speedKmh / 45) * 0.24;
+    // chirrido: derrape, curva al límite del agarre y frenada a fondo a velocidad
+    const lat = extra ? Math.abs(extra.latAccel) : 0;
+    const cornering = Math.max(0, Math.min(1, (lat - 11) / 9)) * Math.min(1, speedKmh / 40);
+    const lockup = extra ? Math.max(0, extra.braking - 0.7) / 0.3 * Math.max(0, Math.min(1, (speedKmh - 45) / 70)) : 0;
+    const screechLevel = Math.max(driftIntensity * Math.min(1, speedKmh / 45) * 0.24, cornering * 0.2, lockup * 0.16);
     this.screechGain.gain.setTargetAtTime(screechLevel, now, 0.05);
-    this.screechFilter.frequency.setTargetAtTime(1180 + Math.min(speedKmh, 140) * 4.5, now, 0.06);
+    this.screechFilter.frequency.setTargetAtTime(1180 + Math.min(speedKmh, 140) * 4.5 + cornering * 260, now, 0.06);
+    if (this.rollGain && this.rollFilter) {
+      const sp = Math.min(speedKmh / 130, 1);
+      this.rollGain.gain.setTargetAtTime(sp * sp * 0.09 + sp * 0.015, now, 0.1);
+      this.rollFilter.frequency.setTargetAtTime(220 + sp * 900, now, 0.1);
+    }
+    // motor tocado: desafina y falla
+    const dmg = extra?.damage ?? 0;
+    if (dmg > 0.35) {
+      this.oscHarmonic.detune.setTargetAtTime((Math.random() - 0.5) * 520 * dmg, now, 0.03);
+      if (Math.random() < 0.06 * dmg) this.engineGain.gain.setTargetAtTime(0.05, now, 0.01);
+    } else this.oscHarmonic.detune.setTargetAtTime(0, now, 0.1);
+  }
+
+  /** Golpe: chasquido de chapa y un golpe sordo; `strength` en [0..1]. */
+  public impact(strength: number): void {
+    if (!this.enabled || !this.ctx || !this.masterGain || !this.noise) return;
+    const ctx = this.ctx, now = ctx.currentTime, k = Math.max(0.15, Math.min(1, strength));
+    const src = ctx.createBufferSource(); src.buffer = this.noise;
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(2600, now); f.frequency.exponentialRampToValueAtTime(220, now + 0.4);
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.5 * k, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+    src.connect(f); f.connect(g); g.connect(this.masterGain);
+    src.start(now, Math.random()); src.stop(now + 0.5);
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(110, now); o.frequency.exponentialRampToValueAtTime(38, now + 0.28);
+    const og = ctx.createGain(); og.gain.setValueAtTime(0.6 * k, now); og.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+    o.connect(og); og.connect(this.masterGain); o.start(now); o.stop(now + 0.35);
+  }
+
+  /** Roce continuo (bordillo, pared): nivel en [0..1]; 0 lo apaga. */
+  public scrape(level: number): void {
+    if (!this.enabled || !this.ctx || !this.scrapeGain) return;
+    this.scrapeGain.gain.setTargetAtTime(Math.max(0, Math.min(1, level)) * 0.16, this.ctx.currentTime, 0.04);
   }
 
   public dispose(): void {

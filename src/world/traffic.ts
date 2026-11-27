@@ -19,7 +19,19 @@ interface Agent {
   rx: number; rz: number; ry: number; rinit: boolean;
   /** orden de prioridad en los cruces: el de menor número pasa primero (así nunca se bloquean dos coches entre sí) */
   uid: number;
+  /** cuánto lleva esperando por una prioridad (si pasa de ~9 s, deja de ceder: nunca se atasca para siempre) */
+  wait: number;
+  /** autobús de línea: ruta (índice) y tramo actual dentro de ella */
+  route?: { i: number; k: number };
+  /** tiempo de parada en la marquesina y parada ya atendida */
+  dwell: number; stopKey?: string; haz: boolean;
 }
+
+/** Línea de autobús de OSM: tramos (ids de vía) en orden y paradas. */
+export interface BusRoute { ref: string; name: string; ways: number[]; stops: number[][] }
+/** Prioridad de cada clase de vía en los cruces sin semáforo. */
+const RANK: Record<string, number> = { motorway: 7, trunk: 6, primary: 5, secondary: 4, tertiary: 3, unclassified: 2, residential: 2, primary_link: 4, secondary_link: 3, tertiary_link: 2, living_street: 1 };
+const BUS_TARGET = 5;
 
 /** Colores de carrocería: mucho blanco, gris, plata y negro, como en la calle. */
 const PAINT = [0xf2f2f0, 0xf2f2f0, 0xe4e6e8, 0xb9bec3, 0xb9bec3, 0x6d7278, 0x2a2c30, 0x2a2c30, 0x9c2b2b, 0x2d4f8c, 0x5b6b4f, 0xc8b79a];
@@ -54,6 +66,9 @@ export class Traffic {
   private agents: Agent[] = [];
   private parked = new Map<string, CarSet[]>();
   private nextUid = 1;
+  private busRoutes: BusRoute[] = [];
+  private wayRoutes = new Map<number, { i: number; k: number }[]>();
+  private busTimer = 0;
   private parkedTiles = new Map<string, ParkedTile>();
   private pool = new Map<VariantId, CarSet>();
   private poolDirty = true;
@@ -107,6 +122,44 @@ export class Traffic {
   }
 
   setSignals(s: Signals) { this.signals = s; }
+
+  /** Líneas de autobús reales (public/world/bus_routes.json): los autobuses las siguen y paran en sus paradas. */
+  setBusRoutes(r: BusRoute[]) {
+    this.busRoutes = r;
+    this.wayRoutes.clear();
+    r.forEach((rt, i) => rt.ways.forEach((id, k) => { const l = this.wayRoutes.get(id); if (l) l.push({ i, k }); else this.wayRoutes.set(id, [{ i, k }]); }));
+  }
+
+  /** Autobús de línea: aparece en un tramo cargado de una ruta, a distancia razonable y fuera de la vista. */
+  private spawnBus(px: number, pz: number, hx: number, hz: number) {
+    for (let tries = 0; tries < 80; tries++) {
+      const w = this.wayList[Math.floor(this.rnd() * this.wayList.length)];
+      if (!w || w.len < 20) continue;
+      const on = this.wayRoutes.get(w.id);
+      if (!on) continue;                                                   // este tramo no es de ninguna línea
+      const { i: ri, k } = on[Math.floor(this.rnd() * on.length)], r = this.busRoutes[ri];
+      let dir: 1 | -1 = w.ow === 1 ? 1 : w.ow === 2 ? -1 : this.rnd() < 0.5 ? 1 : -1;
+      const nx = this.ways.get(r.ways[k + 1]);
+      if (nx && w.ow === 0) {                                              // sentido de la ruta: el extremo más cercano al siguiente tramo
+        const d = (p: number[], q: number[]) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+        const e = w.pts[w.pts.length - 1], s0 = w.pts[0], a0 = nx.pts[0], a1 = nx.pts[nx.pts.length - 1];
+        dir = Math.min(d(e, a0), d(e, a1)) <= Math.min(d(s0, a0), d(s0, a1)) ? 1 : -1;
+      }
+      const a: Agent = {
+        way: w, dir, s: 4 + this.rnd() * (w.len - 8), v: 0, vmax: (SPEED[w.cls] ?? 7) * 0.85, lane: this.laneFor(w),
+        x: 0, z: 0, fx: 0, fz: 1, col: 0, variant: 'bus', len: VARIANT_LEN.bus, hold: 0, sig: 0, braking: false, rx: 0, rz: 0, ry: 0, rinit: false, uid: this.nextUid++,
+        wait: 0, dwell: 0, haz: false, route: { i: ri, k },
+      };
+      this.place(a);
+      const dx = a.x - px, dz = a.z - pz, d = Math.hypot(dx, dz);
+      if (d < 60 || d > 210) continue;
+      if (d < 120 && (dx * hx + dz * hz) / d > 0.35) continue;
+      if (this.agents.some((o) => Math.hypot(o.x - a.x, o.z - a.z) < 18)) continue;
+      a.v = a.vmax * 0.7;
+      this.agents.push(a);
+      return;
+    }
+  }
 
   hasWay(id: number): boolean { return this.ways.has(id); }
 
@@ -272,7 +325,7 @@ export class Traffic {
   private pickVariant(w: Way): VariantId {
     const r = this.rnd();
     const main = (w.cls === 'primary' || w.cls === 'secondary' || w.cls === 'tertiary') && w.len > 60;
-    if (main && r < 0.1) return 'bus';
+    if (main && r < 0.1 && !this.busRoutes.length) return 'bus';
     if (r < 0.1) return 'taxi';
     if (r < 0.38) return 'hatch';
     if (r < 0.62) return 'sedan';
@@ -289,7 +342,7 @@ export class Traffic {
       if (this.agents.filter((q) => q.variant === variant).length >= CAP[variant]) continue;
       const a: Agent = {
         way: w, dir, s: 4 + this.rnd() * (w.len - 8), v: 0, vmax: (SPEED[w.cls] ?? 7) * (0.8 + this.rnd() * 0.3) * (variant === 'bus' ? 0.85 : 1), lane: this.laneFor(w),
-        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0, sig: 0, braking: false, rx: 0, rz: 0, ry: 0, rinit: false, uid: this.nextUid++,
+        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0, sig: 0, braking: false, rx: 0, rz: 0, ry: 0, rinit: false, uid: this.nextUid++, wait: 0, dwell: 0, haz: false,
       };
       this.place(a);
       const dx = a.x - px, dz = a.z - pz, d = Math.hypot(dx, dz);
@@ -308,6 +361,13 @@ export class Traffic {
     const end = a.dir > 0 ? w.pts[w.pts.length - 1] : w.pts[0];
     const cands = (this.ends.get(nodeKey(end[0], end[1])) ?? []).filter((c) => c.way !== w && (c.atStart ? c.way.ow !== 2 : c.way.ow !== 1));
     if (!cands.length) return null;
+    if (a.route) {                                                           // autobús: el siguiente tramo de su línea
+      const r = this.busRoutes[a.route.i];
+      for (let j = a.route.k + 1; j <= a.route.k + 3 && j < r.ways.length; j++) {
+        const c = cands.find((q) => q.way.id === r.ways[j]);
+        if (c) return c;
+      }
+    }
     let tot = 0;
     const wts = cands.map((c) => {
       const p = c.way.pts, q = c.atStart ? p[1] : p[p.length - 2];
@@ -333,6 +393,12 @@ export class Traffic {
     const c = a.plan ?? this.choose(a);
     a.plan = undefined; a.sig = 0;
     if (!c) return false;
+    if (a.route) {
+      const r = this.busRoutes[a.route.i];
+      let found = -1;
+      for (let j = a.route.k + 1; j <= a.route.k + 3 && j < r.ways.length; j++) if (r.ways[j] === c.way.id) { found = j; break; }
+      if (found >= 0) a.route.k = found; else a.route = undefined;          // se salió de la línea: sigue como autobús suelto
+    }
     a.way = c.way; a.dir = c.atStart ? 1 : -1; a.s = c.atStart ? 0.05 : c.way.len - 0.05; a.lane = this.laneFor(c.way);
     a.vmax = (SPEED[c.way.cls] ?? 7) * (0.8 + this.rnd() * 0.3) * (a.variant === 'bus' ? 0.85 : 1);
     return true;
@@ -351,6 +417,11 @@ export class Traffic {
     if (this.dirty) this.rebuild();
     const hx = Math.sin(headingRad), hz = -Math.cos(headingRad);
     if (this.agents.length < Math.round(TARGET_AGENTS * density) && this.wayList.length) this.spawn(px, pz, hx, hz);
+    this.busTimer += dt;
+    if (this.busRoutes.length && this.busTimer > 2.5) {
+      this.busTimer = 0;
+      if (this.agents.filter((q) => q.variant === 'bus').length < Math.round(BUS_TARGET * density) && this.wayList.length) this.spawnBus(px, pz, hx, hz);
+    }
     const keep: Agent[] = [];
     for (const a of this.agents) {
       if (!this.ways.has(a.way.id)) continue;
@@ -387,6 +458,38 @@ export class Traffic {
         const stop = a.len / 2 + 1.6;
         if (along > 0 && along < reach + 4 && Math.abs(rx * -a.fz + rz * a.fx) < 2.4) target = Math.min(target, along < stop ? 0 : Math.max(0, (along - stop) * 0.7));
       }
+      // parada de autobús: se detiene unos segundos junto a la marquesina
+      if (a.route && a.dwell <= 0) {
+        const r = this.busRoutes[a.route.i];
+        for (const st of r.stops) {
+          if (Math.abs(st[0] - a.x) > 9 || Math.abs(st[1] - a.z) > 9 || Math.hypot(st[0] - a.x, st[1] - a.z) > 8) continue;
+          const key = `${Math.round(st[0])},${Math.round(st[1])}`;
+          if (a.stopKey !== key) { a.stopKey = key; a.dwell = 6 + this.rnd() * 4; }
+          break;
+        }
+      }
+      if (a.dwell > 0) { a.dwell -= dt; target = 0; a.haz = a.v < 1.2; } else a.haz = false;
+      // prioridad en cruces sin semáforo: cede a quien llega por una vía de más rango (o, a igualdad, de menor uid) y puede coincidir en el cruce
+      if (toEnd < 26) {
+        const end = a.dir > 0 ? a.way.pts[a.way.pts.length - 1] : a.way.pts[0];
+        if (!(this.signals && this.signals.stateAt(end[0], end[1], a.fx, a.fz))) {
+          const rankA = RANK[a.way.cls] ?? 2;
+          let yielding = false;
+          for (const o of this.agents) {
+            if (o === a || o.way === a.way) continue;
+            const dn = Math.hypot(o.x - end[0], o.z - end[1]);
+            if (dn > 22) continue;
+            const dot = o.fx * a.fx + o.fz * a.fz;
+            if (dot > 0.8 || dot < -0.7) continue;                           // mismo flujo o de frente: no se cruzan
+            if (!(dn < 6 || (end[0] - o.x) * o.fx + (end[1] - o.z) * o.fz > 0)) continue;   // se aleja del cruce
+            const rankO = RANK[o.way.cls] ?? 2;
+            if (!(rankO > rankA || (rankO === rankA && o.uid < a.uid))) continue;
+            if (dn < 6 || Math.abs(toEnd / Math.max(a.v, 2) - dn / Math.max(o.v, 2)) < 2.8) { yielding = true; break; }
+          }
+          if (yielding && a.wait < 9) { a.wait += dt; target = Math.min(target, Math.max(0, toEnd - 3.5 - a.len * 0.3) * 0.8); }
+          else if (!yielding) a.wait = Math.max(0, a.wait - dt * 2);
+        }
+      }
       if (a.hold > 0) { a.hold -= dt; target = 0; }
       const v0 = a.v;
       a.v += Math.max(-8 * dt, Math.min(3 * dt, target - a.v));
@@ -421,7 +524,7 @@ export class Traffic {
       this.pose(this.tmpM, a.rx, a.rz, Math.sin(a.ry), Math.cos(a.ry), a.variant === 'bus' ? 4 : 1.8);
       const hex = a.variant === 'taxi' ? TAXI_PAINT : a.variant === 'bus' ? BUS_PAINT : PAINT[a.col];
       const blink = Math.floor(this.clock * 2.6) % 2 === 0 ? 1 : 0;
-      set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id), a.braking ? 3 : 1, a.sig < 0 ? blink : 0, a.sig > 0 ? blink : 0);
+      set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id), a.braking ? 3 : 1, a.sig < 0 || a.haz ? blink : 0, a.sig > 0 || a.haz ? blink : 0);
       counts.set(a.variant, n + 1);
     }
     for (const v of MOVING_IDS) { const s = this.sets.get(v)!; s.count = counts.get(v) ?? 0; s.flush(); }
@@ -459,8 +562,12 @@ export class Traffic {
         if (d < min && d > 1e-4) {
           const push = (min - d) * 0.6;
           cx += (dx / d) * push; cz += (dz / d) * push;
-          impact = Math.max(impact, Math.min(1, Math.abs(state.speedMps - a.v) / 18));
-          a.v *= 0.4; a.hold = Math.max(a.hold, 0.8);
+          // solo es un golpe si el jugador avanza hacia ese coche; si se aleja (marcha atrás, o el otro se va), solo se le separa
+          const toward = state.speedMps * (pfx * (-dx / d) + pfz * (-dz / d));
+          if (toward > 0.3) {
+            impact = Math.max(impact, Math.min(1, Math.abs(state.speedMps - a.v) / 18));
+            a.v *= 0.4; a.hold = Math.max(a.hold, 0.8);
+          }
         }
       }
     }
