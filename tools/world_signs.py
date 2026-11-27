@@ -6,9 +6,9 @@ from shapely import STRtree
 from shapely.geometry import Point
 from PIL import Image, ImageDraw, ImageFont
 
-CELL_W, CELL_H, COLS = 320, 60, 6
+CELL_W, CELL_H, COLS = 320, 60, 8
 SIGN_W, SIGN_H = 3.8, 0.6
-MAX_SIGNS = 360
+MAX_SIGNS = 560
 import zlib
 FONT_FILES = ["arialbd.ttf", "georgiab.ttf", "timesbd.ttf", "impact.ttf", "trebucbd.ttf", "verdanab.ttf", "segoeuib.ttf", "cambriab.ttf",
               "palab.ttf", "constanb.ttf", "tahomabd.ttf", "bahnschrift.ttf", "BOOKOSB.TTF", "comicbd.ttf"]
@@ -193,7 +193,7 @@ def place_signs(pois, footprints, roads_near, hf, bounds):
         for (qx0, qz0) in [(p["x"], p["z"])] + [tuple(a_) for a_ in p.get("alts", [])]:
             if best is not None and best[0] <= 12: break
             pt = Point(qx0, qz0)
-            for i in tree.query(pt.buffer(14)):
+            for i in tree.query(pt.buffer(18)):
                 poly = footprints[i]; ring = list(poly.exterior.coords); ccw = poly.exterior.is_ccw
                 for a, b in zip(ring[:-1], ring[1:]):
                     dx, dz = b[0] - a[0], b[1] - a[1]; L = math.hypot(dx, dz)
@@ -207,7 +207,7 @@ def place_signs(pois, footprints, roads_near, hf, bounds):
                     allc.append((dist, a, tx, tz, L, t, nx, nz))
                     if best is not None and dist >= best[0]: continue
                     best = (dist, a, tx, tz, L, t, nx, nz)
-        if best is None or best[0] > 12: continue
+        if best is None or best[0] > 16: continue
         picks = [best]
         if p.get("multi"):                                     # esquina: otro cartel en la fachada que da a la otra calle (normal distinta)
             other = [c for c in allc if c[0] <= 18 and c[6] * best[6] + c[7] * best[7] < 0.5 and c[4] >= 3.2]
@@ -237,7 +237,14 @@ def signs_mesh(signs, atlas_path):
     AW, AH = COLS * CELL_W, rows * CELL_H
     im = Image.new("RGB", (AW, AH), (22, 22, 24))
     for i, (name, cat, *_r) in enumerate(signs, start=1): draw_cell(im, i, name, cat)
-    im.save(atlas_path, quality=86, optimize=True)
+    im = im.resize((int(AW * 0.8), int(AH * 0.8)), Image.LANCZOS)          # las celdas se dibujan a 320×60 y se guardan a 256×48: atlas más ligero
+    import time
+    for _try in range(8):                                   # Windows a veces bloquea el fichero un instante (antivirus, indexado)
+        try:
+            im.save(atlas_path, quality=86, optimize=True); break
+        except OSError:
+            time.sleep(1.5)
+            if _try == 7: raise
     V, F, UV = [], [], []
 
     def quad(c, y_b, y_t, w, off, cell):

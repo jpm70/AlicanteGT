@@ -227,7 +227,7 @@ export default function App() {
     applyAtmosphereMode(cfg.atmosphere);
     handlePaintChange(CAR_PAINT_PRESETS.find((c) => c.id === cfg.paintId) ?? CAR_PAINT_PRESETS[0]);
     cameraPresetRef.current = cfg.camera; setCameraPreset(cfg.camera); w.setCameraPreset(cfg.camera);
-    w.traffic.enabled = cfg.traffic; w.peds.enabled = cfg.traffic; w.cyclists.enabled = cfg.traffic;
+    w.traffic.enabled = cfg.traffic; w.peds.enabled = cfg.traffic; w.cyclists.enabled = cfg.traffic; w.trams.enabled = cfg.traffic;
     if (cfg.audio !== (audioRef.current?.isEnabled() ?? false)) handleToggleAudio();
     carStateRef.current = createInitialCarState(cfg.start.la, cfg.start.lo, resolveBearing(cfg));
     w.snapCamera();
@@ -331,7 +331,7 @@ export default function App() {
         setPlacesOpen((o) => !o);                          // L: lista de lugares
       } else if (code === 'KeyT' && !e.repeat) {
         const w = worldRef.current;                       // T: tráfico y peatones sí/no
-        if (w) { const on = !w.traffic.enabled; w.traffic.enabled = on; w.peds.enabled = on; w.cyclists.enabled = on; }
+        if (w) { const on = !w.traffic.enabled; w.traffic.enabled = on; w.peds.enabled = on; w.cyclists.enabled = on; w.trams.enabled = on; }
       } else if (code === 'Digit1' && !e.repeat) {
         applyAtmosphereMode('sunset');
       } else if (code === 'Digit2' && !e.repeat) {

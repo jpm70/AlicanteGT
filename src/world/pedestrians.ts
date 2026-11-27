@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { heightAt } from './geo';
-import { buildPedGeometry, patchPedMaterial, randomLook, type Look } from './pedlook';
+import { buildPedGeometry, F, patchPedMaterial, randomLook, type Look } from './pedlook';
 import { Dogs, type DogItem } from './dogs';
 import { nodeKey, type Traffic, type Way } from './traffic';
 import type { Signals } from './signals';
@@ -20,7 +20,9 @@ interface Ped {
 /** Peatón que cruza por un paso de cebra: espera en una acera, cruza cuando los coches de esa vía tienen rojo y vuelve a esperar. */
 interface Cross { cx: number; cz: number; fx: number; fz: number; w: number; side: 1 | -1; a: number; go: boolean; timer: number; trips: number }
 
-const MAX_PEDS = 120;
+const MAX_PEDS = 200;
+/** Peatón sentado en una terraza (fijo): posición del asiento, hacia dónde mira y aspecto. */
+interface Seated { x: number; z: number; yaw: number; look: Look }
 const WALK_V = 1.35;
 
 /** Peatones por las aceras: siguen las calles de OSM por el lado de la acera, se paran un rato y se apartan del coche. */
@@ -55,7 +57,19 @@ export class Pedestrians {
     this.dogs = new Dogs(scene);
   }
 
+  private seated = new Map<string, Seated[]>();
+
   addCrosswalks(key: string, list: number[][]) { this.crosswalks.set(key, list); }
+
+  /** Asientos ocupados de las terrazas de la tesela: [x, z, yaw]. */
+  addSeats(key: string, list: number[][]) {
+    this.seated.set(key, list.map(([x, z, yaw]) => {
+      const look = randomLook();
+      look.flags |= 1 << F.SEATED; look.flags &= ~((1 << F.BACKPACK) | (1 << F.BAG));
+      return { x, z, yaw, look };
+    }));
+  }
+  removeSeats(key: string) { this.seated.delete(key); }
   removeCrosswalks(key: string) { this.crosswalks.delete(key); }
 
   /** Peatones que están ahora en la calzada (los coches les ceden el paso). */
@@ -252,7 +266,21 @@ export class Pedestrians {
       this.inst.aLook.setXYZW(i, lk.shirt, lk.pants, lk.skin, lk.hair);
       this.inst.aMisc.setXYZW(i, lk.acc, lk.flags, p.phase, p.v / 1.2);
     }
-    this.mesh.count = n;
+    let total = n;
+    for (const list of this.seated.values()) {                      // gente sentada en las terrazas cercanas
+      for (const s of list) {
+        if (total >= MAX_PEDS) break;
+        if ((s.x - px) ** 2 + (s.z - pz) ** 2 > 140 * 140) continue;
+        const lk = s.look;
+        this.tmpQ.setFromAxisAngle(this.ay, s.yaw);
+        this.tmpM.compose(this.tmpV.set(s.x, heightAt(s.x, s.z) + 0.12, s.z), this.tmpQ, this.tmpS.set(lk.scale[0], lk.scale[1], lk.scale[2]));
+        this.mesh.setMatrixAt(total, this.tmpM);
+        this.inst.aLook.setXYZW(total, lk.shirt, lk.pants, lk.skin, lk.hair);
+        this.inst.aMisc.setXYZW(total, lk.acc, lk.flags, 0, 0);
+        total++;
+      }
+    }
+    this.mesh.count = total;
     this.mesh.instanceMatrix.needsUpdate = true;
     for (const at of Object.values(this.inst)) at.needsUpdate = true;
     // perros: junto a su dueño, del lado de la fachada, con un pequeño vaivén

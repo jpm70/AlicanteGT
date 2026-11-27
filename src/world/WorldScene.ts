@@ -17,6 +17,7 @@ import { createPalmAssets, type PalmAssets } from './palms';
 import { Traffic, type BusRoute, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
 import { Pedestrians } from './pedestrians';
 import { Cyclists } from './cyclists';
+import { Trams, type TramData } from './trams';
 import { createFoliageGeometry, createFoliageMaterial } from './foliage';
 import { Signals } from './signals';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
@@ -76,6 +77,7 @@ export class WorldScene {
   readonly traffic: Traffic;
   readonly peds: Pedestrians;
   readonly cyclists: Cyclists;
+  readonly trams: Trams;
   readonly signals = new Signals();
 
   private key: THREE.DirectionalLight;
@@ -191,6 +193,7 @@ export class WorldScene {
     this.traffic.setSignals(this.signals);
     this.peds = new Pedestrians(this.scene, this.traffic, (x, z) => this.collision?.sidewalk(x, z) ?? true, this.signals);
     this.cyclists = new Cyclists(this.scene, this.traffic, this.signals);
+    this.trams = new Trams(this.scene);
     this.traffic.setLightLevel(this.lampLevel());
     if (new URLSearchParams(window.location.search).get('traffic') === '0') { this.traffic.enabled = false; this.peds.enabled = false; this.cyclists.enabled = false; }
     if (new URLSearchParams(window.location.search).get('peds') === '0') this.peds.enabled = false;
@@ -328,6 +331,7 @@ export class WorldScene {
       fetch(`${base}world/dem.json`).then((r) => r.json() as Promise<DemData>),
     ]);
     this.manifest = manifest;
+    fetch(`${base}world/tram.json`).then((r) => r.json()).then((d: TramData) => this.trams.setData(d)).catch(() => undefined);
     fetch(`${base}world/bus_routes.json`).then((r) => r.json()).then((d: { routes: BusRoute[] }) => this.traffic.setBusRoutes(d.routes)).catch(() => undefined);
     for (const t of manifest.tiles) this.infos.set(`${t.tx}_${t.tz}`, t);
     setDem(dem);
@@ -437,6 +441,7 @@ export class WorldScene {
       this.streets.set(key, (col.streets ?? []) as [string, number[][]][]);
       const hidden = this.traffic.addTile(key, (col.roads ?? []) as RoadRec[], (col.parked ?? []) as ParkedRec[], (col.special ?? []) as SpecialRec[]);
       this.peds.addCrosswalks(key, (col.cross ?? []) as number[][]);
+      this.peds.addSeats(key, (col.seats ?? []) as number[][]);
       this.registerDecks(key, (col.decks ?? []) as { w: number; p: [number, number, number][] }[]);
       this.collision?.addTile(
         key,
@@ -541,6 +546,7 @@ export class WorldScene {
     this.streets.delete(key);
     this.signals.unregister(key);
     this.peds.removeCrosswalks(key);
+    this.peds.removeSeats(key);
     this.traffic.removeTile(key);
     this.tiles.delete(key);
     this.loadedCount = this.tiles.size;
@@ -1121,6 +1127,7 @@ export class WorldScene {
     if (this.prof) this.mark('traffic', t_traffic);
     const t_cyclists = this.prof ? performance.now() : 0;
     this.cyclists.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.3 : this.mode === 'sunset' ? 0.8 : 1);
+    this.trams.update(dt, p.x, p.z);
     if (this.prof) this.mark('cyclists', t_cyclists);
     if (this.cycTest) { this.cycTest = false; this.cyclists.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     if (this.carTest) { this.carTest = false; this.traffic.debugShowroom(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
@@ -1145,6 +1152,7 @@ export class WorldScene {
     this.pmrem?.dispose();
     this.composer?.dispose();
     this.cyclists.dispose();
+    this.trams.dispose();
     this.peds.dispose();
     this.traffic.dispose();
     this.renderer.dispose();
