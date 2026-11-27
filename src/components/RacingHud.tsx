@@ -390,7 +390,7 @@ export const RacingHud: React.FC<RacingHudProps> = ({
           {/* Discreet Single-Line Keyboard Reference */}
           <div className="mt-2.5 hidden items-center justify-between border-t border-white/8 pt-2 text-[11px] text-slate-400 sm:flex">
             <span>WASD o Flechas: Conducir · Espacio: Freno de mano y derrape</span>
-            <span>C: Cámara · 1 / 2 / 3: Ambiente · R: Reiniciar · T: Tráfico · L: Lugares · H: Ocultar HUD</span>
+            <span>C: Cámara · 1 / 2 / 3: Ambiente · R: Reiniciar · T: Tráfico · L: Lugares · M: Mapa · H: Ocultar HUD</span>
           </div>
         </div>
       </div>
