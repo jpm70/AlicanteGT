@@ -87,9 +87,20 @@ for wid, (w, pts) in ways.items():
             dist = np.hypot(X0 + ix * F - qx, Z0 + iz * F - qz)
             wt = np.clip(1.0 - (dist - hw) / 12.0, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt)
             m = wt > 0
-            np.add.at(S, (iz[m], ix[m]), wt[m] * hh[m]); np.add.at(Wsum, (iz[m], ix[m]), wt[m]); np.maximum.at(Wmax, (iz[m], ix[m]), wt[m])
+            # la cota de cada nodo la manda sobre todo SU calle: el peso cae con la distancia al eje (si no, una calle paralela a 15 m le mete su cota y la calzada ondula)
+            near = wt[m] / (1.0 + (dist[m] / 3.5) ** 2)
+            np.add.at(S, (iz[m], ix[m]), near * hh[m]); np.add.at(Wsum, (iz[m], ix[m]), near); np.maximum.at(Wmax, (iz[m], ix[m]), wt[m])
 tgt = np.where(Wsum > 0, S / np.maximum(Wsum, 1e-9), base)
 out = base * (1 - Wmax) + tgt * Wmax
+# alisado final de la cota de las calzadas: promedio 3x3 solo entre nodos de calzada (peso Wmax), así las ondas de ~10-20 m que deja el muestreo se quitan
+# sin mezclar la calle con el terreno de alrededor
+core = (Wmax > 0.9).astype(float)
+for _ in range(3):
+    pad_h = np.pad(out * core, 1, mode="edge"); pad_w = np.pad(core, 1, mode="edge")
+    K = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]], float)
+    num = sum(K[i, j] * pad_h[i:i + out.shape[0], j:j + out.shape[1]] for i in range(3) for j in range(3))
+    den = sum(K[i, j] * pad_w[i:i + out.shape[0], j:j + out.shape[1]] for i in range(3) for j in range(3))
+    out = np.where(core > 0, num / np.maximum(den, 1e-9), out)
 # --- plazas y paseos peatonales cerrados (incluida la Explanada): llanos, sin ladera hacia el mar ---
 import shapely
 from shapely.geometry import Polygon
