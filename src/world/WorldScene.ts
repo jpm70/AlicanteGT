@@ -433,12 +433,18 @@ export class WorldScene {
       this.scene.add(lt.group);
       this.tiles.set(key, lt);
       this.streets.set(key, (col.streets ?? []) as [string, number[][]][]);
-      this.traffic.addTile(key, (col.roads ?? []) as RoadRec[], (col.parked ?? []) as ParkedRec[], (col.special ?? []) as SpecialRec[]);
+      const hidden = this.traffic.addTile(key, (col.roads ?? []) as RoadRec[], (col.parked ?? []) as ParkedRec[], (col.special ?? []) as SpecialRec[]);
       this.peds.addCrosswalks(key, (col.cross ?? []) as number[][]);
       this.registerDecks(key, (col.decks ?? []) as { w: number; p: [number, number, number][] }[]);
       this.collision?.addTile(
         key,
-        [...(col.buildings as BuildingCollider[]), ...((col.obstacles ?? []) as BuildingCollider[])],
+        [...(col.buildings as BuildingCollider[]), ...((col.obstacles ?? []) as BuildingCollider[]).filter((o) => {
+          if (!hidden.length || o.p.length > 6) return true;      // coche aparcado no dibujado → sin pared invisible
+          let sx = 0, sz = 0;
+          for (const q of o.p) { sx += q[0]; sz += q[1]; }
+          sx /= o.p.length; sz /= o.p.length;
+          return !hidden.some((r) => (r[0] - sx) ** 2 + (r[1] - sz) ** 2 < 2.5 * 2.5);
+        })],
         (col.drive ?? null) as DriveMask | null,
         (col.walk ?? null) as string | null
       );
