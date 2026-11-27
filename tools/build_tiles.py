@@ -865,6 +865,7 @@ def build_tile(args):
         if e["id"] == LM_PIRAMIDE:
             build_pyramid(poly0, int(hashlib.md5(str(e["id"]).encode()).hexdigest()[:6], 16)); continue
         t = e["tags"]; lv = t.get("building:levels")
+        if poly0.area >= 1500 and any(sp_.contains(c0) for sp_ in G.get("STADIUMS", [])): continue            # lo sustituye stadium_model()
         is_lm = e["id"] in (LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_SOL) or e["id"] in LM_COL
         pieces = [(poly0, None, None, None)] if is_lm else cat_pieces(poly0)
         seed = int(hashlib.md5(str(e["id"]).encode()).hexdigest()[:6], 16)
@@ -1041,7 +1042,114 @@ def build_tile(args):
             special.append([round(cx_, 2), round(cz_, 2), round(math.atan2(fx_, fz_), 3), kind])
             rect_obst(cx_, cz_, fx_, fz_, 9.2 if kind == 2 else 4.6, 2.0, 2.2)
 
+    def stadium_model(lm):
+        """Estadio / plaza de toros: muro exterior, cubierta en voladizo, dos niveles de gradas con pasillo, campo (o arena) y torres de focos.
+        La huella de OSM se reduce hacia el centro (escala) para colocar cada anillo; solo se emiten las aristas cuyo punto medio cae en la tesela."""
+        try: pg = Polygon(lm["poly"]).buffer(0).simplify(1.5)
+        except Exception: return
+        if pg.is_empty or not isinstance(pg, Polygon) or pg.area < 3000: return
+        ext = list(pg.exterior.coords)[:-1]
+        n = len(ext)
+        if n < 4: return
+        cx, cz = pg.centroid.x, pg.centroid.y
+        nm = lm["name"].lower()
+        bull = "toros" in nm; athl = "atletismo" in nm
+        H = 19.0 if bull else (23.0 if pg.area > 15000 else 13.0)
+        gy = [float(hf(x_, z_)) for x_, z_ in ext]
+        yb = min(gy); top = max(gy) + H
+        yp = float(hf(cx, cz)) + 0.25
+        CON = [186, 184, 178, 255]; CON2 = [168, 166, 160, 255]; SEAT = [[34, 76, 150, 255], [226, 226, 228, 255], [180, 40, 44, 255]]
+        def ring(f): return [(cx + (x_ - cx) * f, cz + (z_ - cz) * f) for x_, z_ in ext]
+        R_out, R_roof, R_t1a, R_t1b, R_t2a, R_t2b = ring(1.0), ring(0.82), ring(0.80), ring(0.70), ring(0.67), ring(0.57)
+        for i in range(n):
+            j = (i + 1) % n
+            mx, mz = (ext[i][0] + ext[j][0]) / 2, (ext[i][1] + ext[j][1]) / 2
+            if not (x0 <= mx < x1 and z0 <= mz < z1): continue
+            L = math.hypot(ext[j][0] - ext[i][0], ext[j][1] - ext[i][1])
+            if L < 0.5: continue
+            nx, nz = (ext[j][1] - ext[i][1]) / L, -(ext[j][0] - ext[i][0]) / L
+            if nx * (mx - cx) + nz * (mz - cz) < 0: nx, nz = -nx, -nz
+            col = CON if i % 2 == 0 else CON2
+            def P3(r, k, y): return (r[k][0], y, r[k][1])
+            # muro exterior (de la cota del terreno al borde superior) con friso oscuro arriba
+            det.quad([(ext[i][0], gy[i] - 0.5, ext[i][1]), (ext[j][0], gy[j] - 0.5, ext[j][1]), (ext[j][0], top - 1.4, ext[j][1]), (ext[i][0], top - 1.4, ext[i][1])], (nx, 0.0, nz), col)
+            det.quad([P3(R_out, i, top - 1.4), P3(R_out, j, top - 1.4), P3(R_out, j, top), P3(R_out, i, top)], (nx, 0.0, nz), [120, 52, 40, 255] if bull else [70, 74, 82, 255])
+            # cubierta: de la cornisa hacia dentro, algo más baja
+            det.quad([P3(R_out, i, top), P3(R_out, j, top), P3(R_roof, j, top - 2.2), P3(R_roof, i, top - 2.2)], (-nx * 0.3, 1.0, -nz * 0.3), [214, 214, 210, 255] if not bull else [176, 84, 62, 255])
+            # gradas altas, pasillo y gradas bajas (colores a franjas)
+            yt1 = top - 3.0; ym = yp + (yt1 - yp) * 0.5; yw = ym - 0.2
+            sc = SEAT[(i // 2) % len(SEAT)] if not bull else [206, 186, 150, 255]
+            det.quad([P3(R_t1a, i, yt1), P3(R_t1a, j, yt1), P3(R_t1b, j, ym), P3(R_t1b, i, ym)], (-nx * 0.5, 0.85, -nz * 0.5), sc)
+            det.quad([P3(R_t1b, i, ym), P3(R_t1b, j, ym), P3(R_t2a, j, yw), P3(R_t2a, i, yw)], (-nx * 0.2, 1.0, -nz * 0.2), [150, 150, 146, 255])
+            det.quad([P3(R_t2a, i, yw), P3(R_t2a, j, yw), P3(R_t2b, j, yp + 0.5), P3(R_t2b, i, yp + 0.5)], (-nx * 0.5, 0.85, -nz * 0.5), sc)
+            det.quad([P3(R_t2b, i, yp + 0.5), P3(R_t2b, j, yp + 0.5), P3(R_t2b, j, yp + 0.1), P3(R_t2b, i, yp + 0.1)], (-nx, 0.0, -nz), [60, 60, 64, 255])
+        # campo (verde) o arena, con la pista de atletismo alrededor
+        tb = tbox
+        def fill(rg, y, colr):
+            try: g = Polygon(rg).buffer(0).intersection(tb)
+            except Exception: return
+            for gp in polys_of(g):
+                if gp.area < 2: continue
+                m_ = tri_mesh(gp, y, colr)
+                if m_ is not None: det.add_parts([(np.asarray(m_.vertices), np.asarray(m_.faces), np.asarray(m_.visual.vertex_colors))])
+        if bull: fill(ring(0.57), yp, [214, 188, 140, 255])
+        else:
+            if athl or pg.area > 15000: fill(ring(0.57), yp - 0.02, [172, 70, 52, 255])
+            fill(ring(0.50 if (athl or pg.area > 15000) else 0.57), yp, [64, 142, 74, 255])
+        # torres de focos en las esquinas (salvo la plaza de toros)
+        if not bull:
+            rc_ = list(pg.minimum_rotated_rectangle.exterior.coords)[:4]
+            for k_ in range(4):
+                fx_, fz_ = cx + (rc_[k_][0] - cx) * 1.04, cz + (rc_[k_][1] - cz) * 1.04
+                if not (x0 <= fx_ < x1 and z0 <= fz_ < z1): continue
+                g0 = float(hf(fx_, fz_))
+                det.add_parts([box_at(fx_, fz_, g0, top + 14, 0.9, 0.9, 0.0, [150, 150, 154, 255])])
+                det.add_parts([box_at(fx_, fz_, top + 14, top + 16.5, 5.0, 1.8, 0.0, [248, 248, 236, 255])])
+        c_ = pg.centroid
+        if x0 <= c_.x < x1 and z0 <= c_.y < z1:
+            collid.append({"id": lm["id"], "h": round(top - yb, 1), "p": [[round(x_, 2), round(z_, 2)] for x_, z_ in ext + [ext[0]]]})
+
+    def bus_station(lm):
+        """Estación de autobuses: autobuses en dársenas y marquesinas, solo donde hay suelo libre (fuera de edificios y calzada) dentro de la parcela."""
+        try: pg = Polygon(lm["poly"]).buffer(0)
+        except Exception: return
+        if pg.is_empty or not isinstance(pg, Polygon) or pg.area < 1500: return
+        rc_ = list(pg.minimum_rotated_rectangle.exterior.coords)[:4]
+        e1 = (rc_[1][0] - rc_[0][0], rc_[1][1] - rc_[0][1]); e2 = (rc_[2][0] - rc_[1][0], rc_[2][1] - rc_[1][1])
+        axv = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2; Lx = math.hypot(*axv); Ws = min(math.hypot(*e1), math.hypot(*e2))
+        ux, uz = axv[0] / Lx, axv[1] / Lx; vx, vz = -uz, ux; ang = -math.atan2(uz, ux)
+        cx, cz = pg.centroid.x, pg.centroid.y
+        bsh = [Polygon(b_["p"]).buffer(0) for b_ in collid if len(b_["p"]) >= 4]
+        allow = pg.buffer(2.0)
+        def free(px, pz, sx, sz):
+            r_ = Polygon([(px + ux * a_ + vx * b_, pz + uz * a_ + vz * b_) for a_, b_ in ((-sx / 2, -sz / 2), (sx / 2, -sz / 2), (sx / 2, sz / 2), (-sx / 2, sz / 2))])
+            if not allow.contains(r_): return False
+            if not roads.is_empty and roads.intersects(r_): return False
+            return not any(bp.intersects(r_) for bp in bsh)
+        nbus = 0
+        for row in (-0.34, 0.0, 0.34):                                                       # filas de dársenas a lo ancho de la parcela
+            for k_ in range(int(Lx // 13)):
+                px = cx + ux * (-Lx / 2 + 7 + k_ * 13) + vx * Ws * row
+                pz = cz + uz * (-Lx / 2 + 7 + k_ * 13) + vz * Ws * row
+                if not (x0 <= px < x1 and z0 <= pz < z1) or nbus >= 10: continue
+                if not free(px, pz, 12.6, 3.2): continue
+                special.append([round(px, 2), round(pz, 2), round(math.atan2(ux, uz), 3), 3]); nbus += 1
+                rect_obst(px, pz, ux, uz, 12.0, 2.6, 3.2)
+                y0 = float(hf(px, pz))
+                qx, qz = px + vx * 2.9, pz + vz * 2.9                                        # andén con marquesina al costado de cada autobús
+                if free(qx, qz, 12.0, 2.6):
+                    det.add_parts([box_at(qx, qz, y0, y0 + 0.22, 12.0, 2.6, ang, [168, 166, 160, 255])])
+                    det.add_parts([box_at(qx, qz, y0 + 3.7, y0 + 4.05, 12.0, 2.8, ang, [236, 236, 232, 255])])
+                    det.add_parts([box_at(qx, qz, y0 + 3.5, y0 + 3.7, 12.2, 3.0, ang, [28, 90, 168, 255])])
+                    for e_ in (-1, 1): det.add_parts([box_at(qx + ux * e_ * 5.6, qz + uz * e_ * 5.6, y0, y0 + 3.6, 0.3, 0.3, ang, [200, 200, 196, 255])])
+
     for lm in G.get("LANDMARKS", []):
+        # los estadios se reparten por teselas aristas a arista; el resto se procesan en la tesela de su centro
+        try:
+            if lm["cat"] == "stadium": stadium_model(lm); continue
+            if lm["cat"] == "bus" and lm.get("poly"): bus_station(lm); continue
+        except Exception as ex_:
+            print("  aviso POI", lm["id"], ex_, flush=True)
         if not (x0 <= lm["x"] < x1 and z0 <= lm["z"] < z1): continue
         try:
             if lm["cat"] == "fuel": fuel_station(lm)
@@ -1433,11 +1541,16 @@ LM_LABEL = {"fuel": "Gasolinera", "hospital": "Hospital", "clinic": "Clínica", 
 
 def load_landmarks():
     """POI singulares de OSM (tools/pbf_landmarks.py): se dibujan con rótulo grande en su fachada y, gasolineras y hospitales, con modelo propio."""
-    G["LANDMARKS"] = []
+    G["LANDMARKS"] = []; G["STADIUMS"] = []
     f = D + "landmarks.json"
     if not os.path.exists(f): return
     for lm in json.load(open(f, encoding="utf-8")):
         G["LANDMARKS"].append(lm)
+        if lm["cat"] == "stadium" and lm.get("poly") and len(lm["poly"]) >= 4:
+            try:
+                sp_ = Polygon(lm["poly"]).buffer(0)
+                if isinstance(sp_, Polygon) and sp_.area >= 3000: G["STADIUMS"].append(sp_)
+            except Exception: pass
         q = {"x": lm["x"], "z": lm["z"], "name": lm["name"] or LM_LABEL.get(lm["cat"], ""), "cat": SIGN_CAT.get(lm["cat"], "serv"), "sub": ""}
         if lm.get("poly"):                                    # puntos del perímetro (cada ~9 m) por si el centro cae lejos de la fachada
             pl = lm["poly"]; alts = []
