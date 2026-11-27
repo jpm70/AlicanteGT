@@ -167,7 +167,7 @@ def place_signs(pois, footprints, roads_near, hf, bounds):
     out = []; used = []
     for p in cands:
         if len(out) >= MAX_SIGNS: break
-        best = None
+        best = None; allc = []
         for (qx0, qz0) in [(p["x"], p["z"])] + [tuple(a_) for a_ in p.get("alts", [])]:
             if best is not None and best[0] <= 12: break
             pt = Point(qx0, qz0)
@@ -180,20 +180,28 @@ def place_signs(pois, footprints, roads_near, hf, bounds):
                     t = max(0.0, min(L, (qx0 - a[0]) * tx + (qz0 - a[1]) * tz))
                     qx, qz = a[0] + tx * t, a[1] + tz * t
                     dist = math.hypot(qx0 - qx, qz0 - qz)
-                    if best is not None and dist >= best[0]: continue
                     nx, nz = (tz, -tx) if ccw else (-tz, tx)
                     if not roads_near.contains(Point(qx + nx * 2.0, qz + nz * 2.0)): continue
+                    allc.append((dist, a, tx, tz, L, t, nx, nz))
+                    if best is not None and dist >= best[0]: continue
                     best = (dist, a, tx, tz, L, t, nx, nz)
         if best is None or best[0] > 12: continue
-        dist, a, tx, tz, L, t, nx, nz = best
-        big = p["cat"] in BIG
-        W = min(5.4 if big else 2.6 + (zlib.crc32(p["name"].encode("utf-8")) % 13) * 0.11, L - 0.8)
-        if W < 1.6: continue
-        t = max(W / 2 + 0.4, min(L - W / 2 - 0.4, t))
-        cx, cz = a[0] + tx * t, a[1] + tz * t
-        if any(math.hypot(cx - u[0], cz - u[1]) < (5.0 if big else 3.4) for u in used): continue
-        used.append((cx, cz))
-        out.append((p["name"], p["cat"] + "|" + p.get("sub", ""), cx, cz, nx, nz, W, float(hf(cx, cz)) + (1.4 if big else 0.0)))
+        picks = [best]
+        if p.get("multi"):                                     # esquina: otro cartel en la fachada que da a la otra calle (normal distinta)
+            other = [c for c in allc if c[0] <= 18 and c[6] * best[6] + c[7] * best[7] < 0.5 and c[4] >= 3.2]
+            if other: picks.append(min(other, key=lambda c: c[0]))
+        big = p["cat"] in BIG or bool(p.get("big"))
+        for dist, a, tx, tz, L, t, nx, nz in picks:
+            W = min(5.4 if big else 2.6 + (zlib.crc32(p["name"].encode("utf-8")) % 13) * 0.11, L - 0.8)
+            if W < 1.6: continue
+            ok_ = False
+            for dt_ in (0, 4, -4, 8, -8, 12, -12):                     # si choca con otro cartel (p. ej. el de la esquina), se desplaza a lo largo de la fachada
+                tt = max(W / 2 + 0.4, min(L - W / 2 - 0.4, t + dt_))
+                cx, cz = a[0] + tx * tt, a[1] + tz * tt
+                if not any(math.hypot(cx - u[0], cz - u[1]) < (5.0 if big else 3.4) for u in used): ok_ = True; break
+            if not ok_: continue
+            used.append((cx, cz))
+            out.append((p["name"], p["cat"] + "|" + p.get("sub", ""), cx, cz, nx, nz, W, float(hf(cx, cz)) + (1.4 if big else 0.0)))
     return out
 
 

@@ -1,3 +1,4 @@
+import { stepDodge } from './dodge';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { heightAt } from './geo';
@@ -97,6 +98,7 @@ export class Cyclists {
   private tmpS = new THREE.Vector3(1, 1, 1);
   private ay = new THREE.Vector3(0, 1, 0);
   private posList: { x: number; z: number }[] = [];
+  private dodges = new WeakMap<Cyc, { ox: number; oz: number }>();
   enabled = true;
 
   constructor(private scene: THREE.Scene, private traffic: Traffic, private signals: Signals | null) {
@@ -237,11 +239,14 @@ export class Cyclists {
       const y0 = heightAt(c.x, c.z);
       const pitch = -Math.atan2(heightAt(c.x + c.fx, c.z + c.fz) - heightAt(c.x - c.fx, c.z - c.fz), 2);
       this.tmpQ.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
-      this.tmpM.compose(this.tmpV.set(c.x, y0 + 0.02, c.z), this.tmpQ, this.tmpS);
+      let dg = this.dodges.get(c);
+      if (!dg) { dg = { ox: 0, oz: 0 }; this.dodges.set(c, dg); }
+      stepDodge(dg, c.x, c.z, px, pz, hx, hz, carSpeed, dt);
+      this.tmpM.compose(this.tmpV.set(c.x + dg.ox, y0 + 0.02, c.z + dg.oz), this.tmpQ, this.tmpS);
       this.mesh.setMatrixAt(i, this.tmpM);
       this.aLook.setXYZW(i, c.shirt, c.pants, c.skin, PAL_OFF.acc + (i % 7));
       this.aMisc.setXYZW(i, c.hasHelmet ? PAL_OFF.acc + ((i * 3) % 7) : PAL_OFF.hair + (i % 8), c.wheelAng % (Math.PI * 2), c.phase % (Math.PI * 2), 0);
-      this.posList.push({ x: c.x, z: c.z });
+      this.posList.push({ x: c.x + dg.ox, z: c.z + dg.oz });
     }
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;

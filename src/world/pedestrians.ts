@@ -4,12 +4,15 @@ import { buildPedGeometry, patchPedMaterial, randomLook, type Look } from './ped
 import { Dogs, type DogItem } from './dogs';
 import { nodeKey, type Traffic, type Way } from './traffic';
 import type { Signals } from './signals';
+import { stepDodge } from './dodge';
 
 interface Ped {
   way: Way; dir: 1 | -1; s: number; side: 1 | -1; off: number;
   v: number; vwalk: number; x: number; z: number; fx: number; fz: number;
   phase: number; look: Look; pause: number; flee: number; bad: number; test?: boolean;
   cw?: Cross;
+  /** desvío suave para apartarse del coche */
+  ox?: number; oz?: number;
   /** si pasea un perro: semilla del perro (aspecto y recorrido) */
   dog?: number;
 }
@@ -31,6 +34,7 @@ export class Pedestrians {
   private peds: Ped[] = [];
   private crosswalks = new Map<string, number[][]>();
   private roadObst: { x: number; z: number }[] = [];
+  private car = { x: 0, z: 0, hx: 0, hz: 1, v: 0 };
   private tmpM = new THREE.Matrix4();
   private tmpQ = new THREE.Quaternion();
   private tmpV = new THREE.Vector3();
@@ -73,6 +77,7 @@ export class Pedestrians {
       const st = this.signals.stateAt(c.cx, c.cz, c.fx, c.fz);
       if (st) return st.state === 'r' && st.left > need;
     }
+    if (this.car.v > 3 && Math.hypot(this.car.x - c.cx, this.car.z - c.cz) < 24 && (c.cx - this.car.x) * this.car.hx + (c.cz - this.car.z) * this.car.hz > 0) return false;   // viene el coche del jugador: espera
     return !this.traffic.carWithin(c.cx, c.cz, 28);                         // sin semáforo: cruza cuando no vienen coches
   }
 
@@ -186,6 +191,7 @@ export class Pedestrians {
     if (this.peds.length - nCross < target && ways.length) { this.spawn(px, pz, ways); this.spawn(px, pz, ways); }
     this.roadObst = [];
     const hx = Math.sin(headingRad), hz = -Math.cos(headingRad);
+    this.car = { x: px, z: pz, hx, hz, v: Math.abs(carSpeed) };
     const keep: Ped[] = [];
     for (const p of this.peds) {
       if (p.cw) {                                                    // peatón de paso de cebra
@@ -237,7 +243,11 @@ export class Pedestrians {
       const p = this.peds[i], lk = p.look;
       const yaw = Math.atan2(p.fx, p.fz);
       this.tmpQ.setFromAxisAngle(this.ay, yaw);
-      this.tmpM.compose(this.tmpV.set(p.x, heightAt(p.x, p.z) + 0.02, p.z), this.tmpQ, this.tmpS.set(lk.scale[0], lk.scale[1], lk.scale[2]));
+      const dd = p as Ped & { ox: number; oz: number };
+      if (dd.ox === undefined) { dd.ox = 0; dd.oz = 0; }
+      stepDodge(dd, p.x, p.z, px, pz, hx, hz, carSpeed, dt, p.cw ? undefined : this.walkable);
+      const qx = p.x + dd.ox, qz = p.z + dd.oz;
+      this.tmpM.compose(this.tmpV.set(qx, heightAt(qx, qz) + 0.02, qz), this.tmpQ, this.tmpS.set(lk.scale[0], lk.scale[1], lk.scale[2]));
       this.mesh.setMatrixAt(i, this.tmpM);
       this.inst.aLook.setXYZW(i, lk.shirt, lk.pants, lk.skin, lk.hair);
       this.inst.aMisc.setXYZW(i, lk.acc, lk.flags, p.phase, p.v / 1.2);
