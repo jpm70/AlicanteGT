@@ -43,6 +43,7 @@ export function createInitialCarState(
     yawRate: 0,
     latAccel: 0,
     shake: 0,
+    damage: 0,
   };
 }
 
@@ -69,7 +70,7 @@ export function stepCarPhysics(
     } else {
       // Torque curve: punchy off the line, smooth taper near top speed
       const speedRatio = Math.min(absSpeed / MAX_FORWARD_MPS, 1);
-      accel = 6.2 * (1 - 0.6 * speedRatio * speedRatio);
+      accel = 6.2 * (1 - 0.6 * speedRatio * speedRatio) * (1 - 0.3 * Math.max(0, state.damage - 0.5) * 2);   // con el motor tocado, menos empuje
     }
   } else if (input.brake) {
     if (state.speedMps > 0.6) {
