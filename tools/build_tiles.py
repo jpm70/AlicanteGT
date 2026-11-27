@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from world_config import *          # LAT0, LNG0, KLAT, KLNG, TILE, X0.., tiles(), tile_box(), ortho_px()
 from world_lib import *
 from world_decks import build_decks, _Mesh
-from world_boats import place_boats, boats_mesh
+from world_boats import place_boats, place_quay_boats, boats_mesh
 from world_signs import place_signs, signs_mesh             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
 
 D = "tools/data/"
@@ -720,7 +720,9 @@ def build_tile(args):
     if pier_lines and not sea.is_empty:
         try:
             water_b = G["SEA"].intersection(tbox.buffer(45)).difference(piers.buffer(0.3))
-            boats = place_boats(pier_lines, water_b, (x0, z0, x1, z1), (-700, 50, 500, 700))
+            _placed = []
+            boats = place_boats(pier_lines, water_b, (x0, z0, x1, z1), (-700, 50, 500, 700), placed=_placed)
+            boats += place_quay_boats(G["SEA"], water_b, pier_lines, (x0, z0, x1, z1), (-700, -30, 300, 700), _placed)
         except Exception as ex_:
             print("barcos:", tx, tz, ex_, flush=True)
     parks = unary_union(park_geoms).difference(roads).difference(sea_free) if park_geoms else Polygon()
