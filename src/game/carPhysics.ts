@@ -119,7 +119,7 @@ export function stepCarPhysics(
   state.steerCmd += Math.max(-stepCmd, Math.min(stepCmd, cmdTarget - state.steerCmd));
   const steerCmd = state.steerCmd;
   const maxVisualSteer = 0.56; // ~32 deg at low speed
-  const speedSteerScale = 1 - speedRatio01 * 0.62;
+  const speedSteerScale = 1 - Math.pow(speedRatio01, 0.8) * 0.5;
   const targetVisualSteer = steerCmd * maxVisualSteer * speedSteerScale;
   state.steerAngleRad = damp(state.steerAngleRad, targetVisualSteer, 14, dt);
 
@@ -144,7 +144,7 @@ export function stepCarPhysics(
     const delta = state.steerAngleRad * (canDrift ? 1.5 : 1);
     const lowSpeedFactor = Math.min(absSpeed / 3.0, 1.0);
     const wanted = (absSpeed * Math.tan(delta)) / WHEELBASE;
-    const gripLat = canDrift ? 24 : 18;                       // m/s² de agarre lateral (~1,1 g)
+    const gripLat = canDrift ? 26 : 22;                      // m/s² de agarre lateral (~1,1 g)
     const maxYaw = gripLat / Math.max(absSpeed, 4);
     yawRateRad = Math.max(-maxYaw, Math.min(maxYaw, wanted)) * lowSpeedFactor * directionSign;
     state.headingDeg = (state.headingDeg + yawRateRad * RAD_TO_DEG * dt + 360) % 360;
