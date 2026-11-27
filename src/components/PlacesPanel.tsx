@@ -6,24 +6,24 @@ import {
 
 export interface Place { n: string; c: string; la: number; lo: number }
 
-const CATS: Record<string, { label: string; Icon: typeof Fuel }> = {
-  fuel: { label: 'Gasolineras', Icon: Fuel },
-  hospital: { label: 'Hospitales', Icon: Hospital },
-  clinic: { label: 'Clínicas', Icon: Stethoscope },
-  police: { label: 'Policía', Icon: Shield },
-  fire: { label: 'Bomberos', Icon: Flame },
-  admin: { label: 'Edificios públicos', Icon: Landmark },
-  university: { label: 'Universidades', Icon: GraduationCap },
-  bus: { label: 'Autobuses', Icon: Bus },
-  train: { label: 'Estaciones', Icon: TrainFront },
-  airport: { label: 'Aeropuerto', Icon: Plane },
-  worship: { label: 'Iglesias', Icon: Church },
-  museum: { label: 'Museos', Icon: Building2 },
-  attraction: { label: 'Lugares de interés', Icon: MapPin },
-  hotel: { label: 'Hoteles', Icon: Hotel },
-  stadium: { label: 'Estadios', Icon: Trophy },
-  mall: { label: 'Centros comerciales', Icon: ShoppingBag },
-  culture: { label: 'Cine y teatro', Icon: Clapperboard },
+export const CATS: Record<string, { label: string; Icon: typeof Fuel; color: string }> = {
+  fuel: { label: 'Gasolineras', Icon: Fuel, color: '#f5b52e' },
+  hospital: { label: 'Hospitales', Icon: Hospital, color: '#ef4444' },
+  clinic: { label: 'Clínicas', Icon: Stethoscope, color: '#f87171' },
+  police: { label: 'Policía', Icon: Shield, color: '#3b82f6' },
+  fire: { label: 'Bomberos', Icon: Flame, color: '#f97316' },
+  admin: { label: 'Edificios públicos', Icon: Landmark, color: '#a8a29e' },
+  university: { label: 'Universidades', Icon: GraduationCap, color: '#22d3ee' },
+  bus: { label: 'Autobuses', Icon: Bus, color: '#38bdf8' },
+  train: { label: 'Estaciones', Icon: TrainFront, color: '#a78bfa' },
+  airport: { label: 'Aeropuerto', Icon: Plane, color: '#c4b5fd' },
+  worship: { label: 'Iglesias', Icon: Church, color: '#e7d9b8' },
+  museum: { label: 'Museos', Icon: Building2, color: '#c084fc' },
+  attraction: { label: 'Lugares de interés', Icon: MapPin, color: '#f472b6' },
+  hotel: { label: 'Hoteles', Icon: Hotel, color: '#fb7185' },
+  stadium: { label: 'Estadios', Icon: Trophy, color: '#4ade80' },
+  mall: { label: 'Centros comerciales', Icon: ShoppingBag, color: '#fbbf24' },
+  culture: { label: 'Cine y teatro', Icon: Clapperboard, color: '#e879f9' },
 };
 
 function distKm(la1: number, lo1: number, la2: number, lo2: number): number {

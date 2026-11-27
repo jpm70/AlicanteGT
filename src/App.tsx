@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { DriverCockpitOverlay } from './components/DriverCockpitOverlay';
 import { RacingHud } from './components/RacingHud';
 import { PlacesPanel, type Place } from './components/PlacesPanel';
+import { MiniMap } from './components/MiniMap';
 import {
   ALICANTE_LANDMARKS,
   CAR_PAINT_PRESETS,
@@ -105,6 +106,7 @@ export default function App() {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [placesOpen, setPlacesOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
   const [places, setPlaces] = useState<Place[] | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [webglLost, setWebglLost] = useState(false);
@@ -152,6 +154,7 @@ export default function App() {
     worldRef.current?.snapCamera();
     worldRef.current?.collision?.reset();
     setPlacesOpen(false);
+    setMapOpen(false);
   }, []);
 
   const handleReset = useCallback(() => {
@@ -161,9 +164,8 @@ export default function App() {
   }, [currentLandmarkId, teleportToLandmark]);
 
   useEffect(() => {
-    if (!placesOpen || places) return;
     fetch(`${import.meta.env.BASE_URL}world/places.json`).then((r) => r.json()).then((d: Place[]) => setPlaces(d)).catch(() => setPlaces([]));
-  }, [placesOpen, places]);
+  }, []);
 
   const handleCycleCamera = useCallback(() => {
     setCameraPreset((prev) => {
@@ -219,6 +221,8 @@ export default function App() {
         handleCycleCamera();
       } else if (code === 'KeyH' && !e.repeat) {
         setDockCollapsed((prev) => !prev);
+      } else if (code === 'KeyM' && !e.repeat) {
+        setMapOpen((o) => !o);                              // M: mapa grande
       } else if (code === 'KeyL' && !e.repeat) {
         setPlacesOpen((o) => !o);                          // L: lista de lugares
       } else if (code === 'KeyT' && !e.repeat) {
@@ -444,6 +448,7 @@ export default function App() {
       >
         <span aria-hidden="true">📍</span> Lugares
       </button>
+      <MiniMap carStateRef={carStateRef} places={places} expanded={mapOpen} onToggle={() => setMapOpen((o) => !o)} onGo={teleportToPlace} />
       <PlacesPanel open={placesOpen} places={places} from={{ lat: telemetry.lat, lng: telemetry.lng }} onClose={() => setPlacesOpen(false)} onGo={teleportToPlace} />
 
       <RacingHud
