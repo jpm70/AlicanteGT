@@ -14,7 +14,7 @@ function makeFrond(len: number, pairs: number, leafLen: number, droop: number, r
   const tangent = (t: number) => at(Math.min(t + 0.01, 1)).sub(at(Math.max(t - 0.01, 0))).normalize();
   const dark = base.clone().multiplyScalar(0.8);
   // raquis
-  const seg = 8;
+  const seg = 5;
   for (let i = 0; i < seg; i++) {
     const t0 = i / seg, t1 = (i + 1) / seg;
     const w0 = 0.05 * (1 - t0 * 0.8), w1 = 0.05 * (1 - t1 * 0.8);
@@ -30,7 +30,7 @@ function makeFrond(len: number, pairs: number, leafLen: number, droop: number, r
     const p = at(t);
     const tan = tangent(t);
     const L = leafLen * Math.pow(Math.sin(Math.PI * Math.min(t * 0.92 + 0.04, 1)), 0.55);
-    const w = 0.11;
+    const w = 0.15;
     c.copy(base).lerp(tip, t);
     for (const side of [-1, 1]) {
       const v = 0.55 - 0.25 * t;                           // apertura en V (más cerrada hacia la punta)
@@ -114,11 +114,11 @@ export function createPalmAssets(): PalmAssets {
   const skirt = new THREE.CylinderGeometry(0.46, 0.8, 1.5, 10, 1, true);
   return {
     phoenix: {
-      trunk: trunkP, crown: makeCrown(22, 3.9, 13, 1.35, 1.1, 0.07),
+      trunk: trunkP, crown: makeCrown(17, 3.9, 9, 1.4, 1.1, 0.07),
       trunkMat: new THREE.MeshStandardMaterial({ map: mapP, roughness: 0.95 }), crownMat: leafMat(),
     },
     wash: {
-      trunk: trunkW, crown: makeCrown(15, 2.6, 9, 1.05, 0.9, 0.09), skirt,
+      trunk: trunkW, crown: makeCrown(12, 2.6, 7, 1.1, 0.9, 0.09), skirt,
       trunkMat: new THREE.MeshStandardMaterial({ map: mapW, roughness: 0.95 }), crownMat: leafMat(),
       skirtMat: new THREE.MeshStandardMaterial({ color: 0x8d7a4e, roughness: 1, side: THREE.DoubleSide }),
     },
