@@ -84,3 +84,19 @@ export interface HudTelemetry {
   tilesStatus: 'loading' | 'ready' | 'error';
   tileStatusText: string;
 }
+
+/** Un sitio elegible como salida o meta. `b` = rumbo por defecto de salida (si lo tiene). */
+export interface PlaceRef { n: string; la: number; lo: number; b?: number; c?: string }
+
+/** Lo que se elige en la pantalla de inicio. */
+export interface RaceConfig {
+  start: PlaceRef;
+  /** Rumbo de salida en grados, o 'auto' (hacia la meta; sin meta, el del lugar). */
+  bearing: number | 'auto';
+  dest: PlaceRef | null;
+  camera: CameraPreset;
+  paintId: string;
+  atmosphere: AtmosphereMode;
+  traffic: boolean;
+  audio: boolean;
+}
