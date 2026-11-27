@@ -17,6 +17,7 @@ import { createPalmAssets, type PalmAssets } from './palms';
 import { Traffic, type BusRoute, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
 import { Pedestrians } from './pedestrians';
 import { Cyclists } from './cyclists';
+import { createFoliageGeometry, createFoliageMaterial } from './foliage';
 import { Signals } from './signals';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
@@ -734,48 +735,8 @@ export class WorldScene {
   private leafMat: THREE.MeshStandardMaterial | null = null;
   private leafGeo: THREE.BufferGeometry | null = null;
 
-  /** Copa abultada (icosaedro con los vértices desplazados), para que no parezca una bola lisa. */
-  private leafCrownGeometry(): THREE.BufferGeometry {
-    if (this.leafGeo) return this.leafGeo;
-    const g = new THREE.IcosahedronGeometry(1.9, 1);
-    const p = g.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-      const n = Math.sin(x * 7.3 + z * 3.1) * Math.cos(y * 5.7 - x * 2.3) + Math.sin(z * 6.1 + y * 4.3);
-      const k = 1 + 0.14 * n;
-      p.setXYZ(i, x * k, y * (k * 0.97 + 0.03), z * k);
-    }
-    g.computeVertexNormals();
-    this.leafGeo = g;
-    return g;
-  }
-
-  /** Follaje: la copa se «recorta» en hojas (celdas 3D de ~30 cm con forma alargada y tono propio); con más huecos hacia el borde, para un contorno desflecado. */
-  private leafMaterial(): THREE.MeshStandardMaterial {
-    if (this.leafMat) return this.leafMat;
-    const mat = new THREE.MeshStandardMaterial({ color: 0x57963f, roughness: 0.92, side: THREE.DoubleSide });
-    mat.customProgramCacheKey = () => 'leafy-crown';
-    mat.onBeforeCompile = (sh) => {
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vObjP;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObjP = position;');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', `#include <common>
-          varying vec3 vObjP;
-          float h31(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }`)
-        .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
-          float ndv = abs(dot(normal, normalize(vViewPosition)));
-          vec3 lq = vObjP * 3.3; vec3 lc = floor(lq); vec3 lf = fract(lq) - 0.5;
-          float lh = h31(lc); float la = lh * 6.2831;
-          vec2 ld = vec2(lf.x * cos(la) - lf.z * sin(la), lf.x * sin(la) + lf.z * cos(la));
-          float leaf = length(vec2(ld.x, (ld.y + lf.y * 0.5) * 2.1));
-          if (leaf > 0.38 + 0.5 * ndv + (lh - 0.5) * 0.18 || lh > 0.955) discard;
-          diffuseColor.rgb *= 0.58 + 0.78 * lh;
-          diffuseColor.rgb *= mix(0.55, 1.1, smoothstep(-1.9, 1.9, vObjP.y));`);
-    };
-    this.leafMat = mat;
-    return mat;
-  }
+  private leafCrownGeometry(): THREE.BufferGeometry { return (this.leafGeo ??= createFoliageGeometry()); }
+  private leafMaterial(): THREE.MeshStandardMaterial { return (this.leafMat ??= createFoliageMaterial()); }
 
   private addTrees(lt: LoadedTile, trees: [number, number, number][]) {
     const palms = trees.filter((t) => t[2] === 1);
@@ -801,9 +762,13 @@ export class WorldScene {
       const sc = 0.8 + ((i * 37) % 10) / 25;
       const y = heightAt(x, z);
       m.compose(new THREE.Vector3(x, y + 1.3, z), q, one); bt.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, y + 3.6 * sc, z), q, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
+      const rq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ((i * 53) % 100) / 100 * 6.28);
+      m.compose(new THREE.Vector3(x, y + 3.6 * sc, z), rq, new THREE.Vector3(sc, sc * 0.85, sc)); bc.setMatrixAt(i, m);
+      const tone = 0.82 + ((i * 29) % 40) / 100;
+      bc.setColorAt(i, new THREE.Color(tone * (0.95 + ((i * 7) % 10) / 100), tone, tone * (0.85 + ((i * 13) % 20) / 100)));
     });
     [bt, bc].forEach((im) => { im.instanceMatrix.needsUpdate = true; });
+    if (bc.instanceColor) bc.instanceColor.needsUpdate = true;
 
     // palmeras: Phoenix canariensis (60 %) y Washingtonia (40 %), con altura, inclinación y color propios
     const assets = (this.palmAssets ??= createPalmAssets());
