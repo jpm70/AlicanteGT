@@ -16,6 +16,7 @@ import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
 import { createPalmAssets, type PalmAssets } from './palms';
 import { Traffic, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
 import { Pedestrians } from './pedestrians';
+import { Cyclists } from './cyclists';
 import { Signals } from './signals';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
@@ -70,6 +71,7 @@ export class WorldScene {
   collision: CollisionWorld | null = null;
   readonly traffic: Traffic;
   readonly peds: Pedestrians;
+  readonly cyclists: Cyclists;
   readonly signals = new Signals();
 
   private key: THREE.DirectionalLight;
@@ -107,6 +109,7 @@ export class WorldScene {
   private lastStreet = '';
   private pedTest = new URLSearchParams(window.location.search).get('pedtest') === '1';
   private aerialZoom = Number(new URLSearchParams(window.location.search).get('zoom')) || 1;   // solo pruebas: ?zoom=5 aleja la cámara aérea
+  private cycTest = new URLSearchParams(window.location.search).get('cyctest') === '1';
   private carTest = new URLSearchParams(window.location.search).get('cartest') === '1';
   private camClock = 0;
   private camRoll = 0;
@@ -169,8 +172,9 @@ export class WorldScene {
     this.traffic = new Traffic(this.scene);
     this.traffic.setSignals(this.signals);
     this.peds = new Pedestrians(this.scene, this.traffic, (x, z) => this.collision?.sidewalk(x, z) ?? true, this.signals);
+    this.cyclists = new Cyclists(this.scene, this.traffic, this.signals);
     this.traffic.setLightLevel(this.lampLevel());
-    if (new URLSearchParams(window.location.search).get('traffic') === '0') { this.traffic.enabled = false; this.peds.enabled = false; }
+    if (new URLSearchParams(window.location.search).get('traffic') === '0') { this.traffic.enabled = false; this.peds.enabled = false; this.cyclists.enabled = false; }
     if (new URLSearchParams(window.location.search).get('peds') === '0') this.peds.enabled = false;
     if (new URLSearchParams(window.location.search).get('debug') === '1') (window as unknown as { __gt: WorldScene }).__gt = this;
 
@@ -1006,7 +1010,9 @@ export class WorldScene {
 
     this.updateLampLights(p.x, p.z);
     this.signals.update(dt);
-    this.traffic.update(dt, p.x, p.z, hd, state.speedMps, this.mode === 'night' ? 0.5 : 1, this.peds.onRoad());
+    this.traffic.update(dt, p.x, p.z, hd, state.speedMps, this.mode === 'night' ? 0.5 : 1, this.peds.onRoad().concat(this.cyclists.positions()));
+    this.cyclists.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.3 : this.mode === 'sunset' ? 0.8 : 1);
+    if (this.cycTest) { this.cycTest = false; this.cyclists.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     if (this.carTest) { this.carTest = false; this.traffic.debugShowroom(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     if (this.pedTest) { this.pedTest = false; this.peds.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     this.peds.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.4 : this.mode === 'sunset' ? 0.8 : 1);
@@ -1021,6 +1027,7 @@ export class WorldScene {
     this.envTarget?.dispose();
     this.pmrem?.dispose();
     this.composer?.dispose();
+    this.cyclists.dispose();
     this.peds.dispose();
     this.traffic.dispose();
     this.renderer.dispose();

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { heightAt } from './geo';
 import { buildPedGeometry, patchPedMaterial, randomLook, type Look } from './pedlook';
+import { Dogs, type DogItem } from './dogs';
 import { nodeKey, type Traffic, type Way } from './traffic';
 import type { Signals } from './signals';
 
@@ -9,6 +10,8 @@ interface Ped {
   v: number; vwalk: number; x: number; z: number; fx: number; fz: number;
   phase: number; look: Look; pause: number; flee: number; bad: number; test?: boolean;
   cw?: Cross;
+  /** si pasea un perro: semilla del perro (aspecto y recorrido) */
+  dog?: number;
 }
 
 /** Peatón que cruza por un paso de cebra: espera en una acera, cruza cuando los coches de esa vía tienen rojo y vuelve a esperar. */
@@ -20,6 +23,7 @@ const WALK_V = 1.35;
 /** Peatones por las aceras: siguen las calles de OSM por el lado de la acera, se paran un rato y se apartan del coche. */
 export class Pedestrians {
   private geo = buildPedGeometry();
+  private dogs: Dogs;
   private timeU = { value: 0 };
   private mat: THREE.MeshStandardMaterial;
   private mesh: THREE.InstancedMesh;
@@ -44,6 +48,7 @@ export class Pedestrians {
     for (const name of ['aLook', 'aMisc']) this.inst[name] = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEDS * 4), 4);
     for (const [name, at] of Object.entries(this.inst)) this.geo.setAttribute(name, at);
     scene.add(this.mesh);
+    this.dogs = new Dogs(scene);
   }
 
   addCrosswalks(key: string, list: number[][]) { this.crosswalks.set(key, list); }
@@ -132,6 +137,7 @@ export class Pedestrians {
       const d = Math.hypot(p.x - px, p.z - pz);
       if (d < 20 || d > 120) continue;
       p.v = p.vwalk;
+      if (!look.child && Math.random() < 0.13) p.dog = Math.random();
       this.peds.push(p);
       if (Math.random() < 0.24 && !look.child) {                                  // van en pareja: uno al lado del otro, al mismo paso
         const q: Ped = { ...p, look: randomLook(), phase: p.phase + 1.7, off: p.off + 0.75 * (p.side === 1 ? 1 : 1), vwalk: p.vwalk, pause: p.pause };
@@ -171,7 +177,7 @@ export class Pedestrians {
   }
 
   update(dt: number, px: number, pz: number, headingRad: number, carSpeed: number, density: number) {
-    if (!this.enabled) { this.mesh.count = 0; return; }
+    if (!this.enabled) { this.mesh.count = 0; this.dogs.sync([], 0); return; }
     this.timeU.value += dt;
     const { ways } = this.traffic.graph();
     const target = Math.round(60 * density);
@@ -239,6 +245,17 @@ export class Pedestrians {
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;
     for (const at of Object.values(this.inst)) at.needsUpdate = true;
+    // perros: junto a su dueño, del lado de la fachada, con un pequeño vaivén
+    const items: DogItem[] = [];
+    const tt = this.timeU.value;
+    for (let i = 0; i < n; i++) {
+      const p = this.peds[i];
+      if (p.dog === undefined) continue;
+      const rx = -p.fz, rz = p.fx, sd = p.cw ? 1 : p.side;
+      const along = -0.5 + Math.sin(tt * 0.8 + p.dog * 40) * 0.45, lat = sd * (0.75 + Math.sin(tt * 1.3 + p.dog * 17) * 0.18);
+      items.push({ x: p.x + p.fx * along + rx * lat, z: p.z + p.fz * along + rz * lat, fx: p.fx + rx * Math.sin(tt * 1.7 + p.dog * 9) * 0.25, fz: p.fz + rz * Math.sin(tt * 1.7 + p.dog * 9) * 0.25, v: Math.max(p.v, 0.2), seed: p.dog });
+    }
+    this.dogs.sync(items, dt);
   }
 
   /** Solo para depuración (?pedtest=1): 6 peatones andando en línea recta delante del coche. */
@@ -246,13 +263,14 @@ export class Pedestrians {
     const way: Way = { id: -1, cls: 'test', ow: 0, w: 0, pts: [[px + hx * 6, pz + hz * 6], [px + hx * 80, pz + hz * 80]], cum: [0, 74], len: 74, tiles: new Set() };
     for (let i = 0; i < 10; i++) {
       this.peds.push({ way, dir: 1, s: 4 + i * 2.2, side: i % 2 ? 1 : -1, off: 0.7 + (i % 3) * 0.9, v: 1.3, vwalk: 1.3, x: 0, z: 0, fx: 0, fz: 1, phase: i * 1.3,
-        look: randomLook(), pause: 0, flee: 0, bad: 0, test: true });
+        look: randomLook(), pause: 0, flee: 0, bad: 0, test: true, dog: i % 3 === 0 ? 0.1 + i * 0.07 : undefined });
     }
   }
 
   stats() { return { peds: this.peds.length, sample: this.peds.slice(0, 3).map((q) => [Math.round(q.x), Math.round(q.z), +q.v.toFixed(2)]) }; }
 
   dispose() {
+    this.dogs.dispose();
     this.scene.remove(this.mesh);
     this.mesh.dispose();
     this.geo.dispose();
