@@ -107,6 +107,7 @@ export class WorldScene {
   private lastStreet = '';
   private pedTest = new URLSearchParams(window.location.search).get('pedtest') === '1';
   private aerialZoom = Number(new URLSearchParams(window.location.search).get('zoom')) || 1;   // solo pruebas: ?zoom=5 aleja la cámara aérea
+  private carTest = new URLSearchParams(window.location.search).get('cartest') === '1';
   private camClock = 0;
   private camRoll = 0;
   private groundPitch = 0;
@@ -1006,6 +1007,7 @@ export class WorldScene {
     this.updateLampLights(p.x, p.z);
     this.signals.update(dt);
     this.traffic.update(dt, p.x, p.z, hd, state.speedMps, this.mode === 'night' ? 0.5 : 1, this.peds.onRoad());
+    if (this.carTest) { this.carTest = false; this.traffic.debugShowroom(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     if (this.pedTest) { this.pedTest = false; this.peds.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     this.peds.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.4 : this.mode === 'sunset' ? 0.8 : 1);
     this.tickSky(p.x, p.z, dt);
