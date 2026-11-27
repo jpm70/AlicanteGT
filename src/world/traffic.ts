@@ -137,7 +137,9 @@ export class Traffic {
     return this.tmpC.multiplyScalar(k);
   }
 
-  addTile(key: string, roads: RoadRec[], parked: ParkedRec[], special: SpecialRec[] = []) {
+  /** Devuelve los coches aparcados que NO se dibujan (cerca de cruces): su colisionador también debe quitarse. */
+  addTile(key: string, roads: RoadRec[], parked: ParkedRec[], special: SpecialRec[] = []): ParkedRec[] {
+    let removed: ParkedRec[] = [];
     for (const [id, cls, ow, w, pts] of roads) {
       let way = this.ways.get(id);
       if (!way) {
@@ -179,6 +181,7 @@ export class Traffic {
         }
         return false;
       };
+      removed = parked.filter((rec) => nearJunction(rec[0], rec[1]));
       parked = parked.filter((rec) => !nearJunction(rec[0], rec[1]));
     }
     if (parked.length) {
@@ -192,6 +195,7 @@ export class Traffic {
       this.parkedTiles.set(key, t);
       this.poolDirty = true;
     }
+    return removed;
   }
 
   /** Recoloca el grupo de coches aparcados cercanos (cada ~18 m de avance o al cargar/descargar teselas). */
