@@ -21,6 +21,9 @@ import { Signals } from './signals';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
 
 const DEG = Math.PI / 180;
+const srgbToLinear = (v: number) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+const SRGB8_TO_LINEAR8 = (() => { const t = new Uint8Array(256); for (let i = 0; i < 256; i++) t[i] = Math.round(srgbToLinear(i / 255) * 255); return t; })();
+const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 /** Las luces de constants.ts están pensadas para el coche solo; en un mundo claro saturan. */
 const LK = 0.5;
 const damp = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));
@@ -111,6 +114,20 @@ export class WorldScene {
   private aerialZoom = Number(new URLSearchParams(window.location.search).get('zoom')) || 1;   // solo pruebas: ?zoom=5 aleja la cámara aérea
   private cycTest = new URLSearchParams(window.location.search).get('cyctest') === '1';
   private carTest = new URLSearchParams(window.location.search).get('cartest') === '1';
+  /** Solo con ?debug=1: milisegundos acumulados por sección y fotogramas (window.__prof(), reinicia al leer). */
+  private prof: Record<string, number> | null = new URLSearchParams(window.location.search).get('debug') === '1' ? {} : null;
+  private profFrames = 0;
+  private lastRender = 0;
+  private mark(name: string, t0: number) { this.prof![name] = (this.prof![name] ?? 0) + performance.now() - t0; }
+  profile() {
+    if (!this.prof) return null;
+    const f = Math.max(1, this.profFrames);
+    const out: Record<string, number> = { frames: this.profFrames };
+    for (const [k, v] of Object.entries(this.prof)) out[k] = k === 'calls' || k === 'tris' || k === 'tileMax' || k === 'tiles' || k === 'maxGap' ? +v.toFixed(1) : +(v / f).toFixed(2);
+    this.profFrames = 0;
+    for (const k of Object.keys(this.prof)) if (k !== 'calls' && k !== 'tris') this.prof[k] = 0;
+    return out;
+  }
   private camClock = 0;
   private camRoll = 0;
   private groundPitch = 0;
@@ -337,6 +354,7 @@ export class WorldScene {
         (info.signs ?? 0) > 0 ? new THREE.TextureLoader().loadAsync(`${this.base}world/tiles/${key}_signs.jpg`).catch(() => null) : Promise.resolve(null),
       ]);
       if (this.tiles.has(key)) return;
+      const tTile = this.prof ? performance.now() : 0;
       const lt: LoadedTile = { key, group: new THREE.Group(), textures: [], materials: [] };
       if (signTex) {
         signTex.colorSpace = THREE.SRGBColorSpace;
@@ -368,12 +386,11 @@ export class WorldScene {
         if (!m.isMesh) return;
         const n = o.name;
         const ca = m.geometry.getAttribute('color');   // los colores del GLB están en sRGB; Three espera lineal en COLOR_0
-        if (ca) {
-          const c = new THREE.Color();
-          for (let i = 0; i < ca.count; i++) {
-            c.setRGB(ca.getX(i), ca.getY(i), ca.getZ(i), THREE.SRGBColorSpace);
-            ca.setXYZ(i, c.r, c.g, c.b);
-          }
+        if (ca) {                                      // sRGB -> lineal directamente sobre el array (con tabla para bytes): mucho más rápido que vértice a vértice
+          const arr = ca.array as ArrayLike<number> & { [i: number]: number }, st = ca.itemSize;
+          if (arr instanceof Uint8Array) { for (let i = 0; i < arr.length; i++) if (st !== 4 || (i & 3) !== 3) arr[i] = SRGB8_TO_LINEAR8[arr[i]]; }
+          else if (arr instanceof Float32Array) { for (let i = 0; i < arr.length; i++) if (st !== 4 || (i & 3) !== 3) arr[i] = srgbToLinear(arr[i]); }
+          else { const c = new THREE.Color(); for (let i = 0; i < ca.count; i++) { c.setRGB(ca.getX(i), ca.getY(i), ca.getZ(i), THREE.SRGBColorSpace); ca.setXYZ(i, c.r, c.g, c.b); } }
           ca.needsUpdate = true;
         }
         m.receiveShadow = n !== 'Water';
@@ -405,8 +422,14 @@ export class WorldScene {
         }
       });
       lt.group.add(gltf.scene);
+      await nextFrame();                                // el trabajo de una tesela se reparte en varios fotogramas para no dar tirones
       this.addTrees(lt, (col.trees ?? []) as [number, number, number][]);
       this.addLamps(lt, (col.lamps ?? []) as [number, number, number, number?][]);
+      lt.group.traverse((o) => {                       // árboles, farolas… de la tesela: se descartan si quedan fuera de la cámara
+        const im = o as THREE.InstancedMesh;
+        if (im.isInstancedMesh && im.count > 0) { im.computeBoundingSphere(); im.frustumCulled = true; }
+      });
+      await nextFrame();
       this.scene.add(lt.group);
       this.tiles.set(key, lt);
       this.streets.set(key, (col.streets ?? []) as [string, number[][]][]);
@@ -420,6 +443,7 @@ export class WorldScene {
         (col.walk ?? null) as string | null
       );
       this.loadedCount = this.tiles.size;
+      if (this.prof) { const ms = performance.now() - tTile; this.prof.tileMax = Math.max(this.prof.tileMax ?? 0, ms); this.prof.tiles = (this.prof.tiles ?? 0) + 1; }
     } finally {
       this.loading.delete(key);
     }
@@ -934,8 +958,11 @@ export class WorldScene {
 
   /** Dibuja un frame: coloca el coche y la cámara según el estado. */
   render(state: CarState, dt: number) {
+    if (this.prof) { const nw = performance.now(); if (this.lastRender) this.prof.maxGap = Math.max(this.prof.maxGap ?? 0, nw - this.lastRender); this.lastRender = nw; }
     const p = toLocal(state.lat, state.lng);
+    const t_stream = this.prof ? performance.now() : 0;
     if (this.manifest) this.streamTiles(p.x, p.z);
+    if (this.prof) this.mark('stream', t_stream);
     this.rig.updateFromState(state, dt);
     if (this.camSnap) this.carY = heightAt(p.x, p.z);
     const gy = this.groundY(p.x, p.z, this.carY, this.camSnap);
@@ -1008,17 +1035,31 @@ export class WorldScene {
     this.key.target.position.set(p.x, gy, p.z);
     this.rim.position.set(p.x + 14, 9, p.z + 16);
 
+    const t_lamps = this.prof ? performance.now() : 0;
     this.updateLampLights(p.x, p.z);
+    if (this.prof) this.mark('lamps', t_lamps);
+    const t_signals = this.prof ? performance.now() : 0;
     this.signals.update(dt);
+    if (this.prof) this.mark('signals', t_signals);
+    const t_traffic = this.prof ? performance.now() : 0;
     this.traffic.update(dt, p.x, p.z, hd, state.speedMps, this.mode === 'night' ? 0.5 : 1, this.peds.onRoad().concat(this.cyclists.positions()));
+    if (this.prof) this.mark('traffic', t_traffic);
+    const t_cyclists = this.prof ? performance.now() : 0;
     this.cyclists.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.3 : this.mode === 'sunset' ? 0.8 : 1);
+    if (this.prof) this.mark('cyclists', t_cyclists);
     if (this.cycTest) { this.cycTest = false; this.cyclists.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     if (this.carTest) { this.carTest = false; this.traffic.debugShowroom(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
     if (this.pedTest) { this.pedTest = false; this.peds.debugAhead(p.x, p.z, Math.sin(hd), -Math.cos(hd)); }
+    const t_peds = this.prof ? performance.now() : 0;
     this.peds.update(dt, p.x, p.z, hd, Math.abs(state.speedMps), this.mode === 'night' ? 0.4 : this.mode === 'sunset' ? 0.8 : 1);
+    if (this.prof) this.mark('peds', t_peds);
+    const t_sky = this.prof ? performance.now() : 0;
     this.tickSky(p.x, p.z, dt);
+    if (this.prof) this.mark('sky', t_sky);
+    const t_draw = this.prof ? performance.now() : 0;
     if (this.composer) this.composer.render(dt);
     else this.renderer.render(this.scene, this.camera);
+    if (this.prof) { this.mark('draw', t_draw); this.profFrames++; const i = this.renderer.info.render; this.prof.calls = i.calls; this.prof.tris = i.triangles; }
   }
 
   dispose() {

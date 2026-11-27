@@ -156,7 +156,7 @@ interface VariantGeo {
 function buildVariant(id: VariantId): VariantGeo {
   const sp = SPECS[id];
   const paint: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [], glass: THREE.BufferGeometry[] = [], lights: THREE.BufferGeometry[] = [], tail: THREE.BufferGeometry[] = [], sigL: THREE.BufferGeometry[] = [], sigR: THREE.BufferGeometry[] = [];
-  const NB = 18;
+  const NB = 12;
   const rings = sp.st.map(([z, hw, yb, yt]) => squircle(NB, hw, (yt - yb) / 2, sp.bus || sp.van ? 4.2 : 3.2).map(([x, y]) => [x, (yt + yb) / 2 + y, z]));
   paint.push(loft(rings, true, true));
   const cr = sp.cab.map(([y, zr, zf, hw]) => squircle(NB, (zf - zr) / 2, hw, sp.bus ? 5 : 3).map(([a, b]) => [b, y, (zf + zr) / 2 + a]));
@@ -177,10 +177,9 @@ function buildVariant(id: VariantId): VariantGeo {
     sg.push(colorVerts(flatBox(0.16, 0.08, 0.07, sx * sp.hwMid * 0.9, sp.tailY + 0.12, sp.rear + 0.05), [1, 0.62, 0.08]));
     paint.push(flatBox(0.12, 0.09, 0.2, sx * (sp.hwMid + 0.07), sp.mirrorY, sp.mirrorZ));
     for (const sz of sp.wheelZ) {
-      trim.push(colorVerts(cyl(sp.wheelR, 0.24, sx * sp.track, sp.wheelR, sz, 16), [0.03, 0.03, 0.035]));
-      trim.push(colorVerts(cyl(sp.wheelR * 0.62, 0.26, sx * (sp.track + 0.005), sp.wheelR, sz, 10), [0.66, 0.68, 0.7]));
-      trim.push(colorVerts(cyl(sp.wheelR * 0.2, 0.28, sx * (sp.track + 0.01), sp.wheelR, sz, 6), [0.25, 0.25, 0.27]));
-      trim.push(colorVerts(cyl(sp.wheelR * 1.28, 0.03, sx * (x0 - 0.012), sp.wheelR * 1.05, sz, 14), [0.015, 0.015, 0.02]));      // paso de rueda
+      trim.push(colorVerts(cyl(sp.wheelR, 0.24, sx * sp.track, sp.wheelR, sz, 10), [0.03, 0.03, 0.035]));
+      trim.push(colorVerts(cyl(sp.wheelR * 0.62, 0.26, sx * (sp.track + 0.005), sp.wheelR, sz, 8), [0.66, 0.68, 0.7]));
+      trim.push(colorVerts(cyl(sp.wheelR * 1.28, 0.03, sx * (x0 - 0.012), sp.wheelR * 1.05, sz, 8), [0.015, 0.015, 0.02]));      // paso de rueda
     }
     for (const dz of sp.doors) trim.push(colorVerts(flatBox(0.02, sp.bus ? 1.6 : 0.6, 0.025, sx * x0, sp.bus ? 1.3 : 0.64, dz), [0.07, 0.07, 0.08]));   // junta de puerta
     if (!sp.bus) trim.push(colorVerts(flatBox(0.03, 0.44, 0.08, sx * (sp.cab[1][3] + 0.01), sp.cab[1][0] + 0.02, (sp.cab[1][1] + sp.cab[1][2]) / 2 - 0.1), dark));       // pilar B
@@ -227,7 +226,7 @@ export class CarSet {
   readonly sigL: THREE.InstancedMesh | null;
   readonly sigR: THREE.InstancedMesh | null;
   private tmpC = new THREE.Color();
-  constructor(g: VariantGeo, mats: { paint: THREE.Material; trim: THREE.Material; glass: THREE.Material; lights: THREE.Material }, count: number, moving: boolean) {
+  constructor(g: VariantGeo, mats: { paint: THREE.Material; trim: THREE.Material; glass: THREE.Material; lights: THREE.Material }, count: number, moving: boolean, shadow = true) {
     this.paint = new THREE.InstancedMesh(g.paint, mats.paint, count);
     this.trim = new THREE.InstancedMesh(g.trim, mats.trim, count);
     this.glass = new THREE.InstancedMesh(g.glass, mats.glass, count);
@@ -235,7 +234,7 @@ export class CarSet {
     this.tail = moving ? new THREE.InstancedMesh(g.tail, mats.lights, count) : null;
     this.sigL = moving ? new THREE.InstancedMesh(g.sigL, mats.lights, count) : null;
     this.sigR = moving ? new THREE.InstancedMesh(g.sigR, mats.lights, count) : null;
-    for (const m of this.all()) { m.frustumCulled = false; m.castShadow = !(m === this.lights || m === this.tail || m === this.sigL || m === this.sigR); }
+    for (const m of this.all()) { m.frustumCulled = false; m.castShadow = shadow && !(m === this.lights || m === this.tail || m === this.sigL || m === this.sigR); }
   }
   private all(): THREE.InstancedMesh[] { return [this.paint, this.trim, this.glass, this.lights, ...(this.tail ? [this.tail, this.sigL!, this.sigR!] : [])]; }
   /** tailK: brillo de los pilotos (1 normal, más al frenar); sigL/sigR: 1 = intermitente encendido. */
@@ -277,8 +276,8 @@ export class VehicleLib {
     return g;
   }
 
-  makeSet(v: VariantId, count: number, parked: boolean): CarSet {
-    return new CarSet(this.geo(v), parked ? { ...this.mats, lights: this.parkedLights } : this.mats, count, !parked);
+  makeSet(v: VariantId, count: number, parked: boolean, shadow = true): CarSet {
+    return new CarSet(this.geo(v), parked ? { ...this.mats, lights: this.parkedLights } : this.mats, count, !parked, shadow);
   }
 
   setLightLevel(lv: number) {

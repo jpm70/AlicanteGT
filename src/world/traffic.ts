@@ -15,6 +15,8 @@ interface Agent {
   x: number; z: number; fx: number; fz: number; col: number; variant: VariantId; len: number; hold: number;
   /** salida elegida con antelación (para poner el intermitente) y luces de freno */
   plan?: { way: Way; atStart: boolean }; sig: -1 | 0 | 1; braking: boolean;
+  /** posición y rumbo dibujados (suavizados): en los cruces el coche describe una curva en vez de saltar de una vía a otra */
+  rx: number; rz: number; ry: number; rinit: boolean;
 }
 
 /** Colores de carrocería: mucho blanco, gris, plata y negro, como en la calle. */
@@ -32,6 +34,12 @@ const CAP: Record<VariantId, number> = { sedan: 40, hatch: 40, suv: 40, van: 16,
 export type SpecialRec = number[];
 const SPECIAL: { v: VariantId; hex: number }[] = [{ v: 'police', hex: 0xf4f4f6 }, { v: 'ambulance', hex: 0xf4f4f0 }, { v: 'fire', hex: 0xc41e1e }, { v: 'bus', hex: 0x1f4e9a }];
 
+/** Coches aparcados: solo se dibujan los que están cerca (el resto de los miles del mapa no cuesta nada). */
+const POOL_R = 150;
+const POOL_VARIANTS: VariantId[] = ['sedan', 'hatch', 'suv', 'van'];
+const POOL_CAP: Record<string, number> = { sedan: 320, hatch: 320, suv: 320, van: 120 };
+interface ParkedTile { n: number; x: Float32Array; z: Float32Array; yaw: Float32Array; col: Uint8Array; v: Uint8Array }
+
 const NODE = 1.5;
 export const nodeKey = (x: number, z: number) => `${Math.round(x / NODE)},${Math.round(z / NODE)}`;
 
@@ -43,6 +51,10 @@ export class Traffic {
   private dirty = true;
   private agents: Agent[] = [];
   private parked = new Map<string, CarSet[]>();
+  private parkedTiles = new Map<string, ParkedTile>();
+  private pool = new Map<VariantId, CarSet>();
+  private poolDirty = true;
+  private poolAt = { x: 1e9, z: 1e9 };
   private lib = new VehicleLib();
   private sets = new Map<VariantId, CarSet>();
   private beams: THREE.InstancedMesh;
@@ -65,6 +77,10 @@ export class Traffic {
       s.count = 0;
       s.addTo(scene);
       this.sets.set(v, s);
+    }
+    for (const v of POOL_VARIANTS) {
+      const set = this.lib.makeSet(v, POOL_CAP[v], true, false);
+      set.count = 0; set.addTo(scene); this.pool.set(v, set);
     }
     // haces de los faros sobre el asfalto (aditivos, solo de noche y al atardecer)
     const cv = document.createElement('canvas');
@@ -147,30 +163,60 @@ export class Traffic {
     }
     if (spSets.length) this.parked.set(key + '#sp', spSets);
     if (parked.length) {
-      const groups = new Map<VariantId, { i: number; rec: number[] }[]>();
-      parked.forEach((rec, i) => {
-        const [, , , col, kind] = rec;
-        const v: VariantId = kind === 1 ? 'van' : kind === 2 ? 'hatch' : PARKED_CAR[(col + i) % PARKED_CAR.length];
-        const arr = groups.get(v);
-        if (arr) arr.push({ i, rec }); else groups.set(v, [{ i, rec }]);
-      });
-      const sets: CarSet[] = [];
-      for (const [v, list] of groups) {
-        const set = this.lib.makeSet(v, list.length, true);
-        list.forEach(({ i, rec }, j) => {
-          const [x, z, yaw, col] = rec;
-          this.pose(this.tmpM, x, z, Math.sin(yaw), Math.cos(yaw), v === 'van' ? 2 : 1.8);
-          set.set(j, this.tmpM, this.tone(PAINT[col % PAINT.length], i + col));
-        });
-        set.flush();
-        set.addTo(this.scene);
-        sets.push(set);
+      // sin coches aparcados a menos de 13 m de un cruce: en las esquinas la vía gira y el coche quedaría atravesado
+      const J = 20, cells = new Map<string, number[]>();
+      for (const r of roads) {
+        for (const q of [r[4][0], r[4][r[4].length - 1]]) {
+          const k = `${Math.floor(q[0] / J)},${Math.floor(q[1] / J)}`;
+          const arr = cells.get(k); if (arr) arr.push(q[0], q[1]); else cells.set(k, [q[0], q[1]]);
+        }
       }
-      this.parked.set(key, sets);
+      const nearJunction = (x: number, z: number) => {
+        const cx = Math.floor(x / J), cz = Math.floor(z / J);
+        for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+          const a = cells.get(`${cx + i},${cz + j}`);
+          if (a) for (let k = 0; k < a.length; k += 2) if ((a[k] - x) ** 2 + (a[k + 1] - z) ** 2 < 169) return true;
+        }
+        return false;
+      };
+      parked = parked.filter((rec) => !nearJunction(rec[0], rec[1]));
+    }
+    if (parked.length) {
+      const n = parked.length;
+      const t: ParkedTile = { n, x: new Float32Array(n), z: new Float32Array(n), yaw: new Float32Array(n), col: new Uint8Array(n), v: new Uint8Array(n) };
+      parked.forEach(([x, z, yaw, col, kind], i) => {
+        t.x[i] = x; t.z[i] = z; t.yaw[i] = yaw; t.col[i] = col;
+        const v: VariantId = kind === 1 ? 'van' : kind === 2 ? 'hatch' : PARKED_CAR[(col + i) % PARKED_CAR.length];
+        t.v[i] = POOL_VARIANTS.indexOf(v);
+      });
+      this.parkedTiles.set(key, t);
+      this.poolDirty = true;
     }
   }
 
+  /** Recoloca el grupo de coches aparcados cercanos (cada ~18 m de avance o al cargar/descargar teselas). */
+  private refreshPool(px: number, pz: number) {
+    if (!this.poolDirty && Math.hypot(px - this.poolAt.x, pz - this.poolAt.z) < 18) return;
+    this.poolDirty = false; this.poolAt = { x: px, z: pz };
+    const counts = [0, 0, 0, 0], R2 = POOL_R * POOL_R;
+    const sets = POOL_VARIANTS.map((v) => this.pool.get(v)!);
+    let seed = 0;
+    for (const t of this.parkedTiles.values()) {
+      for (let i = 0; i < t.n; i++) {
+        const dx = t.x[i] - px, dz = t.z[i] - pz;
+        if (dx * dx + dz * dz > R2) continue;
+        const vi = t.v[i];
+        if (counts[vi] >= POOL_CAP[POOL_VARIANTS[vi]]) continue;
+        const yaw = t.yaw[i];
+        this.pose(this.tmpM, t.x[i], t.z[i], Math.sin(yaw), Math.cos(yaw), POOL_VARIANTS[vi] === 'van' ? 2 : 1.8);
+        sets[vi].set(counts[vi]++, this.tmpM, this.tone(PAINT[t.col[i] % PAINT.length], (seed++) + t.col[i] + Math.round(t.x[i])));
+      }
+    }
+    for (let k = 0; k < 4; k++) { sets[k].count = counts[k]; sets[k].flush(); }
+  }
+
   removeTile(key: string) {
+    if (this.parkedTiles.delete(key)) this.poolDirty = true;
     for (const k of [key, key + '#sp']) {
       const sets = this.parked.get(k);
       if (sets) { for (const s of sets) { s.removeFrom(this.scene); s.dispose(); } this.parked.delete(k); }
@@ -236,7 +282,7 @@ export class Traffic {
       if (this.agents.filter((q) => q.variant === variant).length >= CAP[variant]) continue;
       const a: Agent = {
         way: w, dir, s: 4 + this.rnd() * (w.len - 8), v: 0, vmax: (SPEED[w.cls] ?? 7) * (0.8 + this.rnd() * 0.3) * (variant === 'bus' ? 0.85 : 1), lane: this.laneFor(w),
-        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0, sig: 0, braking: false,
+        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0, sig: 0, braking: false, rx: 0, rz: 0, ry: 0, rinit: false,
       };
       this.place(a);
       const dx = a.x - px, dz = a.z - pz, d = Math.hypot(dx, dz);
@@ -292,6 +338,7 @@ export class Traffic {
   }
 
   update(dt: number, px: number, pz: number, headingRad: number, playerSpeed: number, density = 1, obstacles: { x: number; z: number }[] = []) {
+    this.refreshPool(px, pz);
     if (!this.enabled) { for (const s of this.sets.values()) s.count = 0; return; }
     this.clock += dt;
     if (this.dirty) this.rebuild();
@@ -338,11 +385,22 @@ export class Traffic {
       a.s += a.dir * a.v * dt;
       if (a.s < 0 || a.s > a.way.len) {
         if (!this.turn(a)) {
-          if (a.way.ow === 0) { a.dir = (a.dir * -1) as 1 | -1; a.s = Math.max(0.1, Math.min(a.way.len - 0.1, a.s)); a.lane = this.laneFor(a.way); }
+          if (a.way.ow === 0) { a.dir = (a.dir * -1) as 1 | -1; a.s = Math.max(0.1, Math.min(a.way.len - 0.1, a.s)); a.lane = this.laneFor(a.way); a.rinit = false; }
           else continue;
         }
       }
       this.place(a);
+      if (!a.rinit) { a.rx = a.x; a.rz = a.z; a.ry = Math.atan2(a.fx, a.fz); a.rinit = true; }
+      {
+        const k = 1 - Math.exp(-9 * dt), ox = a.rx, oz = a.rz;
+        a.rx += (a.x - a.rx) * k; a.rz += (a.z - a.rz) * k;
+        const mx = a.rx - ox, mz = a.rz - oz;
+        if (mx * mx + mz * mz > 1e-5) {                                         // el rumbo sigue la trayectoria real (no el de la vía a la que va a saltar)
+          let d = Math.atan2(mx, mz) - a.ry;
+          d = Math.atan2(Math.sin(d), Math.cos(d));
+          a.ry += d * (1 - Math.exp(-10 * dt));
+        }
+      }
       keep.push(a);
     }
     this.agents = keep;
@@ -351,7 +409,7 @@ export class Traffic {
       const set = this.sets.get(a.variant)!;
       const n = counts.get(a.variant) ?? 0;
       if (n >= CAP[a.variant]) continue;
-      this.pose(this.tmpM, a.x, a.z, a.fx, a.fz, a.variant === 'bus' ? 4 : 1.8);
+      this.pose(this.tmpM, a.rx, a.rz, Math.sin(a.ry), Math.cos(a.ry), a.variant === 'bus' ? 4 : 1.8);
       const hex = a.variant === 'taxi' ? TAXI_PAINT : a.variant === 'bus' ? BUS_PAINT : PAINT[a.col];
       const blink = Math.floor(this.clock * 2.6) % 2 === 0 ? 1 : 0;
       set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id), a.braking ? 3 : 1, a.sig < 0 ? blink : 0, a.sig > 0 ? blink : 0);
@@ -362,9 +420,9 @@ export class Traffic {
       const n = Math.min(this.agents.length, MAX_AGENTS);
       for (let i = 0; i < n; i++) {
         const a = this.agents[i];
-        const yaw = Math.atan2(a.fx, a.fz);
+        const yaw = a.ry, sx = Math.sin(a.ry), sz = Math.cos(a.ry);
         this.tmpQ.setFromAxisAngle(this.tmpV.set(0, 1, 0), yaw);
-        this.tmpM.compose(this.tmpV.set(a.x + a.fx * (a.len / 2 - 2.1), heightAt(a.x, a.z) + 0.12, a.z + a.fz * (a.len / 2 - 2.1)), this.tmpQ, this.tmpS);
+        this.tmpM.compose(this.tmpV.set(a.rx + sx * (a.len / 2 - 2.1), heightAt(a.rx, a.rz) + 0.12, a.rz + sz * (a.len / 2 - 2.1)), this.tmpQ, this.tmpS);
         this.beams.setMatrixAt(i, this.tmpM);
       }
       this.beams.count = n;
@@ -421,7 +479,7 @@ export class Traffic {
   stats() {
     return {
       ways: this.ways.size, usable: this.wayList.length, agents: this.agents.length, parkedTiles: this.parked.size,
-      parked: [...this.parked.values()].reduce((n, sets) => n + sets.reduce((m, s) => m + s.count, 0), 0),
+      parked: [...this.parkedTiles.values()].reduce((n, t) => n + t.n, 0), parkedDrawn: [...this.pool.values()].reduce((n, s) => n + s.count, 0),
       variants: Object.fromEntries(MOVING_IDS.map((v) => [v, this.agents.filter((q) => q.variant === v).length])),
       sample: this.agents.slice(0, 3).map((q) => [Math.round(q.x), Math.round(q.z), +q.v.toFixed(1)]),
     };
@@ -432,6 +490,7 @@ export class Traffic {
     this.scene.remove(this.beams); this.beams.geometry.dispose(); this.beamMat.dispose();
     for (const sets of this.parked.values()) for (const s of sets) { s.removeFrom(this.scene); s.dispose(); }
     this.parked.clear();
+    for (const s of this.pool.values()) { s.removeFrom(this.scene); s.dispose(); }
     this.lib.dispose();
   }
 }
