@@ -14,7 +14,7 @@ import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider, type DriveMask } from './collision';
 import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
 import { createPalmAssets, type PalmAssets } from './palms';
-import { Traffic, type ParkedRec, type RoadRec } from './traffic';
+import { Traffic, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
 import { Pedestrians } from './pedestrians';
 import { Signals } from './signals';
 import { createFacadeAtlas, createMosaicTexture, FACADE_STYLES } from './facades';
@@ -406,7 +406,7 @@ export class WorldScene {
       this.scene.add(lt.group);
       this.tiles.set(key, lt);
       this.streets.set(key, (col.streets ?? []) as [string, number[][]][]);
-      this.traffic.addTile(key, (col.roads ?? []) as RoadRec[], (col.parked ?? []) as ParkedRec[]);
+      this.traffic.addTile(key, (col.roads ?? []) as RoadRec[], (col.parked ?? []) as ParkedRec[], (col.special ?? []) as SpecialRec[]);
       this.peds.addCrosswalks(key, (col.cross ?? []) as number[][]);
       this.registerDecks(key, (col.decks ?? []) as { w: number; p: [number, number, number][] }[]);
       this.collision?.addTile(

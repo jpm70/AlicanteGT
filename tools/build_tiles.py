@@ -1015,11 +1015,41 @@ def build_tile(args):
                 det.add_parts([box_at(hx + 2.0, hz, top + 0.14, top + 0.2, 0.8, 5.0, 0.0, [244, 244, 240, 255])])
                 det.add_parts([box_at(hx, hz, top + 0.14, top + 0.2, 4.0, 0.8, 0.0, [244, 244, 240, 255])])
 
+    special = []
+
+    def emergency_vehicles(lm, kind, n):
+        """Aparca n vehículos de emergencia (0 policía, 1 ambulancia, 2 bomberos) en el borde de la calzada más cercana a la entrada."""
+        cands = [(lm["x"], lm["z"])] + [tuple(q_) for q_ in (lm.get("poly") or [])]
+        best = None
+        for (qx, qz) in cands:
+            for r_ in road_lines:
+                if r_["k"] not in ("primary", "secondary", "tertiary", "residential", "unclassified", "living_street") or r_["w"] < 5.5: continue
+                q_ = r_["p"]
+                for i_ in range(len(q_) - 1):
+                    ax_, az_ = q_[i_]; bx_, bz_ = q_[i_ + 1]; dx_, dz_ = bx_ - ax_, bz_ - az_; l2 = dx_ * dx_ + dz_ * dz_
+                    if l2 < 4.0: continue
+                    t_ = max(0.0, min(1.0, ((qx - ax_) * dx_ + (qz - az_) * dz_) / l2)); px_, pz_ = ax_ + t_ * dx_, az_ + t_ * dz_; d_ = math.hypot(qx - px_, qz - pz_)
+                    if d_ < 40 and (best is None or d_ < best[0]): best = (d_, px_, pz_, dx_ / math.sqrt(l2), dz_ / math.sqrt(l2), r_["w"])
+        if best is None: return
+        _, px_, pz_, fx_, fz_, w_ = best
+        off = w_ / 2 - 1.0
+        gap = 7.0 if kind == 2 else 5.8
+        for k_ in range(n):
+            cx_, cz_ = px_ + (-fz_) * off + fx_ * gap * (k_ - (n - 1) / 2), pz_ + fx_ * off + fz_ * gap * (k_ - (n - 1) / 2)
+            if not (x0 <= cx_ < x1 and z0 <= cz_ < z1): continue
+            if not roads.contains(Point(cx_, cz_)): continue
+            special.append([round(cx_, 2), round(cz_, 2), round(math.atan2(fx_, fz_), 3), kind])
+            rect_obst(cx_, cz_, fx_, fz_, 9.2 if kind == 2 else 4.6, 2.0, 2.2)
+
     for lm in G.get("LANDMARKS", []):
         if not (x0 <= lm["x"] < x1 and z0 <= lm["z"] < z1): continue
         try:
             if lm["cat"] == "fuel": fuel_station(lm)
-            elif lm["cat"] in ("hospital", "clinic"): hospital_roof(lm)
+            elif lm["cat"] in ("hospital", "clinic"):
+                hospital_roof(lm)
+                if lm["cat"] == "hospital": emergency_vehicles(lm, 1, 2)
+            elif lm["cat"] == "police": emergency_vehicles(lm, 0, 2)
+            elif lm["cat"] == "fire": emergency_vehicles(lm, 2, 1)
         except Exception as ex_:
             print("  aviso POI", lm["id"], ex_, flush=True)
 
@@ -1205,7 +1235,7 @@ def build_tile(args):
         except OSError:
             if _try == 7: raise
             time.sleep(1.5)
-    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst + poi_obst, "parked": parked, "roads": roads_out, "cross": crosswalks, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
+    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst + poi_obst, "parked": parked, "special": special, "roads": roads_out, "cross": crosswalks, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
                "drive": {"x0": x0, "z0": z0, "cell": DC, "nx": n, "nz": n, "bits": bits}, "walk": wbits}, open(f"{OUT}/{name}.json", "w"))
     ortho = 0
     src = f"{D}ortho_t/{name}.jpg"
