@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DriverCockpitOverlay } from './components/DriverCockpitOverlay';
 import { RacingHud } from './components/RacingHud';
+import { PlacesPanel, type Place } from './components/PlacesPanel';
 import {
   ALICANTE_LANDMARKS,
   CAR_PAINT_PRESETS,
@@ -103,6 +104,8 @@ export default function App() {
   const [currentLandmarkId, setCurrentLandmarkId] = useState<string>(ALICANTE_LANDMARKS[0].id);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [dockCollapsed, setDockCollapsed] = useState(false);
+  const [placesOpen, setPlacesOpen] = useState(false);
+  const [places, setPlaces] = useState<Place[] | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [webglLost, setWebglLost] = useState(false);
 
@@ -144,11 +147,23 @@ export default function App() {
     worldRef.current?.collision?.reset();
   }, []);
 
+  const teleportToPlace = useCallback((pl: Place) => {
+    carStateRef.current = createInitialCarState(pl.la, pl.lo, carStateRef.current.headingDeg);
+    worldRef.current?.snapCamera();
+    worldRef.current?.collision?.reset();
+    setPlacesOpen(false);
+  }, []);
+
   const handleReset = useCallback(() => {
     const landmark =
       ALICANTE_LANDMARKS.find((l) => l.id === currentLandmarkId) ?? ALICANTE_LANDMARKS[0];
     teleportToLandmark(landmark);
   }, [currentLandmarkId, teleportToLandmark]);
+
+  useEffect(() => {
+    if (!placesOpen || places) return;
+    fetch(`${import.meta.env.BASE_URL}world/places.json`).then((r) => r.json()).then((d: Place[]) => setPlaces(d)).catch(() => setPlaces([]));
+  }, [placesOpen, places]);
 
   const handleCycleCamera = useCallback(() => {
     setCameraPreset((prev) => {
@@ -204,6 +219,8 @@ export default function App() {
         handleCycleCamera();
       } else if (code === 'KeyH' && !e.repeat) {
         setDockCollapsed((prev) => !prev);
+      } else if (code === 'KeyL' && !e.repeat) {
+        setPlacesOpen((o) => !o);                          // L: lista de lugares
       } else if (code === 'KeyT' && !e.repeat) {
         const w = worldRef.current;                       // T: tráfico y peatones sí/no
         if (w) { const on = !w.traffic.enabled; w.traffic.enabled = on; w.peds.enabled = on; }
@@ -419,6 +436,16 @@ export default function App() {
       </p>
 
       {/* Semantic Motorsport HUD Overlay */}
+      <button
+        type="button"
+        onClick={() => setPlacesOpen((o) => !o)}
+        className="fixed right-3 top-3 z-30 flex items-center gap-1.5 rounded-lg border border-white/20 bg-[#0b1220]/80 px-2.5 py-1.5 text-xs font-medium text-slate-100 shadow-lg backdrop-blur hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"
+        title="Lugares: gasolineras, hospitales, estaciones… (L)"
+      >
+        <span aria-hidden="true">📍</span> Lugares
+      </button>
+      <PlacesPanel open={placesOpen} places={places} from={{ lat: telemetry.lat, lng: telemetry.lng }} onClose={() => setPlacesOpen(false)} onGo={teleportToPlace} />
+
       <RacingHud
         telemetry={telemetry}
         atmosphere={atmosphere}

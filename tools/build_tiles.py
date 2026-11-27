@@ -922,6 +922,107 @@ def build_tile(args):
                  for r in road_lines if r["k"] in DRIVE_K and len(r["p"]) >= 2]
     tree_obst = [{"id": 0, "h": 4, "p": [[round(x + 0.4 * math.cos(a * math.pi / 4), 2), round(z + 0.4 * math.sin(a * math.pi / 4), 2)] for a in range(9)]} for x, z, _ in trees]
 
+    # --- puntos de interés con modelo propio: gasolineras (marquesina, surtidores, tótem, tienda) y hospitales (cruz y helipuerto en la azotea) ---
+    poi_obst = []
+    BRAND_COL = {"bp": [0, 150, 60], "repsol": [255, 120, 0], "cepsa": [220, 30, 40], "moeve": [220, 30, 40], "shell": [250, 200, 0], "galp": [255, 110, 0],
+                 "petroprix": [0, 90, 170], "ballenoil": [0, 110, 180], "plenoil": [240, 200, 0], "avia": [230, 20, 30], "disa": [0, 90, 160], "tamoil": [0, 70, 150],
+                 "q8": [0, 70, 160], "carrefour": [20, 80, 170], "eroski": [220, 30, 40], "esclatoil": [0, 110, 180]}
+
+    def brand_col(lm):
+        t = (lm.get("brand", "") + " " + lm.get("name", "")).lower()
+        for k_, v_ in BRAND_COL.items():
+            if k_ in t: return v_
+        return [30, 100, 170]
+
+    def rect_obst(cx, cz, ux, uz, sx, sz, h):
+        vx, vz = -uz, ux
+        pts = [(cx + ux * a_ + vx * b_, cz + uz * a_ + vz * b_) for a_, b_ in ((-sx / 2, -sz / 2), (sx / 2, -sz / 2), (sx / 2, sz / 2), (-sx / 2, sz / 2), (-sx / 2, -sz / 2))]
+        poi_obst.append({"id": 0, "h": h, "p": [[round(a_, 2), round(b_, 2)] for a_, b_ in pts]})
+
+    def fuel_station(lm):
+        pol = None
+        if lm.get("poly") and len(lm["poly"]) >= 4:
+            try: pol = Polygon(lm["poly"]).buffer(0)
+            except Exception: pol = None
+            if pol is not None and (pol.is_empty or not isinstance(pol, Polygon)): pol = None
+        big = pol is not None and pol.area >= 120
+        cx, cz = (pol.centroid.x, pol.centroid.y) if pol is not None else (lm["x"], lm["z"])
+        if big:
+            rc_ = list(pol.minimum_rotated_rectangle.exterior.coords)[:4]
+            e1 = (rc_[1][0] - rc_[0][0], rc_[1][1] - rc_[0][1]); e2 = (rc_[2][0] - rc_[1][0], rc_[2][1] - rc_[1][1])
+            axv = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2; Ls = max(math.hypot(*e1), math.hypot(*e2)); Ws = min(math.hypot(*e1), math.hypot(*e2))
+            ln = math.hypot(*axv); ux, uz = axv[0] / ln, axv[1] / ln
+            can_l = max(10.0, min(22.0, Ls * 0.62)); can_w = max(6.5, min(12.0, Ws * 0.55))
+        else:
+            bd, ux, uz = 1e9, 1.0, 0.0
+            for r_ in road_lines:
+                q_ = r_["p"]
+                for i_ in range(len(q_) - 1):
+                    ax_, az_ = q_[i_]; bx_, bz_ = q_[i_ + 1]; dx_, dz_ = bx_ - ax_, bz_ - az_; l2 = dx_ * dx_ + dz_ * dz_
+                    if l2 < 0.01: continue
+                    t_ = max(0.0, min(1.0, ((cx - ax_) * dx_ + (cz - az_) * dz_) / l2)); d_ = math.hypot(cx - (ax_ + t_ * dx_), cz - (az_ + t_ * dz_))
+                    if d_ < bd: bd, ux, uz = d_, dx_ / math.sqrt(l2), dz_ / math.sqrt(l2)
+            can_l, can_w = 14.0, 8.0
+        vx, vz = -uz, ux; ang = -math.atan2(uz, ux)
+        y0 = float(hf(cx, cz)); col = brand_col(lm) + [255]
+        det.add_parts([box_at(cx, cz, y0 + 4.75, y0 + 5.2, can_l, can_w, ang, [238, 238, 234, 255])])           # cubierta
+        det.add_parts([box_at(cx, cz, y0 + 4.45, y0 + 4.75, can_l + 0.2, can_w + 0.2, ang, col)])             # franja de color de la marca
+        for a_ in (-1, 1):
+            for b_ in (-1, 1):
+                det.add_parts([box_at(cx + ux * a_ * (can_l / 2 - 0.8) + vx * b_ * (can_w / 2 - 0.8), cz + uz * a_ * (can_l / 2 - 0.8) + vz * b_ * (can_w / 2 - 0.8), y0, y0 + 4.5, 0.45, 0.45, ang, [205, 205, 200, 255])])
+        for sd in (-1, 1):                                                                                      # dos islas con dos surtidores cada una
+            ix, iz = cx + vx * sd * can_w * 0.2, cz + vz * sd * can_w * 0.2
+            det.add_parts([box_at(ix, iz, y0, y0 + 0.2, can_l * 0.7, 1.2, ang, [128, 128, 132, 255])])
+            rect_obst(ix, iz, ux, uz, can_l * 0.7, 1.2, 1.4)
+            for k_ in (-1, 1):
+                px, pz = ix + ux * k_ * can_l * 0.2, iz + uz * k_ * can_l * 0.2
+                det.add_parts([box_at(px, pz, y0 + 0.2, y0 + 1.75, 0.6, 0.42, ang, col)])
+                det.add_parts([box_at(px, pz, y0 + 1.2, y0 + 1.55, 0.62, 0.44, ang, [30, 34, 40, 255])])
+        mx, mz = cx + ux * (can_l / 2 + 3.2) * (1 if (lm["id"] % 2) else -1), cz + uz * (can_l / 2 + 3.2) * (1 if (lm["id"] % 2) else -1)   # tótem de precios
+        det.add_parts([box_at(mx, mz, y0, y0 + 7.0, 0.3, 0.3, ang, [70, 72, 78, 255])])
+        det.add_parts([box_at(mx, mz, y0 + 4.6, y0 + 7.4, 0.35, 2.2, ang, col)])
+        det.add_parts([box_at(mx, mz, y0 + 4.9, y0 + 5.7, 0.4, 1.9, ang, [250, 250, 246, 255])])
+        if big and pol.area >= 260:                                                                             # tienda
+            kx, kz = cx + vx * (can_w / 2 + 3.4), cz + vz * (can_w / 2 + 3.4)
+            det.add_parts([box_at(kx, kz, y0, y0 + 3.2, 6.5, 4.0, ang, [236, 232, 222, 255])])
+            det.add_parts([box_at(kx - vx * 2.02, kz - vz * 2.02, y0 + 0.4, y0 + 2.6, 5.4, 0.1, ang, [38, 52, 62, 255])])
+            det.add_parts([box_at(kx, kz, y0 + 3.2, y0 + 3.5, 6.8, 4.3, ang, col)])
+            rect_obst(kx, kz, ux, uz, 6.5, 4.0, 3.2)
+
+    def hospital_roof(lm):
+        pt = Point(lm["x"], lm["z"]); cand = None; area_best = 0.0
+        for b_ in collid:
+            if len(b_["p"]) < 4: continue
+            try: bp = Polygon(b_["p"]).buffer(0)
+            except Exception: continue
+            if bp.is_empty or not isinstance(bp, Polygon): continue
+            if (bp.contains(pt) or bp.distance(pt) < 8) and bp.area > area_best: cand, area_best = (b_, bp), bp.area
+        if cand is None or area_best < 300: return
+        b_, bp = cand
+        ext = list(bp.exterior.coords); top = float(hf([c[0] for c in ext], [c[1] for c in ext]).max()) + b_["h"]
+        rp = bp.representative_point(); rx, rz = rp.x, rp.y
+        det.add_parts([box_at(rx, rz, top, top + 0.9, 0.3, 0.3, 0.0, [90, 90, 94, 255])])
+        det.add_parts([box_at(rx, rz, top + 0.9, top + 7.4, 0.5, 7.0, 0.0, [250, 250, 250, 255])])               # cartel vertical con cruz
+        det.add_parts([box_at(rx, rz, top + 3.0, top + 5.2, 0.6, 1.4, 0.0, [196, 26, 38, 255])])
+        det.add_parts([box_at(rx, rz, top + 3.8, top + 4.4, 0.6, 4.6, 0.0, [196, 26, 38, 255])])
+        if area_best >= 1200:                                                                                   # helipuerto
+            hp = bp.buffer(-9)
+            if not hp.is_empty and isinstance(hp, Polygon): hx, hz = hp.centroid.x, hp.centroid.y
+            else: hx, hz = bp.centroid.x, bp.centroid.y
+            if math.hypot(hx - rx, hz - rz) >= 10 and bp.contains(Point(hx, hz)):
+                det.add_parts([box_at(hx, hz, top, top + 0.14, 13.0, 13.0, 0.0, [60, 84, 74, 255])])
+                det.add_parts([box_at(hx - 2.0, hz, top + 0.14, top + 0.2, 0.8, 5.0, 0.0, [244, 244, 240, 255])])
+                det.add_parts([box_at(hx + 2.0, hz, top + 0.14, top + 0.2, 0.8, 5.0, 0.0, [244, 244, 240, 255])])
+                det.add_parts([box_at(hx, hz, top + 0.14, top + 0.2, 4.0, 0.8, 0.0, [244, 244, 240, 255])])
+
+    for lm in G.get("LANDMARKS", []):
+        if not (x0 <= lm["x"] < x1 and z0 <= lm["z"] < z1): continue
+        try:
+            if lm["cat"] == "fuel": fuel_station(lm)
+            elif lm["cat"] in ("hospital", "clinic"): hospital_roof(lm)
+        except Exception as ex_:
+            print("  aviso POI", lm["id"], ex_, flush=True)
+
     # --- muros de piedra (OSM: contención, murallas, muros altos) y escaleras (highway=steps) ---
     wall_obst = []
     STONE = [178, 160, 128, 255]; STONE_TOP = [206, 192, 160, 255]; PLASTER = [222, 212, 196, 255]; TREAD = [204, 200, 190, 255]; RISER = [170, 166, 156, 255]
@@ -1104,7 +1205,7 @@ def build_tile(args):
         except OSError:
             if _try == 7: raise
             time.sleep(1.5)
-    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst, "parked": parked, "roads": roads_out, "cross": crosswalks, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
+    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst + poi_obst, "parked": parked, "roads": roads_out, "cross": crosswalks, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
                "drive": {"x0": x0, "z0": z0, "cell": DC, "nx": n, "nz": n, "bits": bits}, "walk": wbits}, open(f"{OUT}/{name}.json", "w"))
     ortho = 0
     src = f"{D}ortho_t/{name}.jpg"
@@ -1292,8 +1393,34 @@ def load_pois():
             q.setdefault("sub", ""); G["POIS"].append(q)
 
 
+SIGN_CAT = {"fuel": "fuel", "hospital": "hospital", "clinic": "hospital", "police": "police", "fire": "fire", "admin": "admin", "university": "edu", "bus": "transport",
+            "train": "transport", "airport": "transport", "worship": "worship", "museum": "cult", "attraction": "cult", "culture": "cult", "hotel": "lodge",
+            "stadium": "stadium", "mall": "market"}
+LM_LABEL = {"fuel": "Gasolinera", "hospital": "Hospital", "clinic": "Clínica", "police": "Policía", "fire": "Bomberos", "admin": "Edificio público", "university": "Universidad",
+            "bus": "Estación de autobuses", "worship": "Iglesia", "train": "Estación", "museum": "Museo", "attraction": "Lugar de interés", "hotel": "Hotel",
+            "stadium": "Estadio", "airport": "Aeropuerto", "mall": "Centro comercial", "culture": "Cine / Teatro"}
+
+
+def load_landmarks():
+    """POI singulares de OSM (tools/pbf_landmarks.py): se dibujan con rótulo grande en su fachada y, gasolineras y hospitales, con modelo propio."""
+    G["LANDMARKS"] = []
+    f = D + "landmarks.json"
+    if not os.path.exists(f): return
+    for lm in json.load(open(f, encoding="utf-8")):
+        G["LANDMARKS"].append(lm)
+        q = {"x": lm["x"], "z": lm["z"], "name": lm["name"] or LM_LABEL.get(lm["cat"], ""), "cat": SIGN_CAT.get(lm["cat"], "serv"), "sub": ""}
+        if lm.get("poly"):                                    # puntos del perímetro (cada ~9 m) por si el centro cae lejos de la fachada
+            pl = lm["poly"]; alts = []
+            for i in range(len(pl) - 1):
+                (ax, az), (bx, bz) = pl[i], pl[i + 1]; n = max(1, int(math.hypot(bx - ax, bz - az) // 9))
+                for k in range(n): alts.append([ax + (bx - ax) * (k + 0.5) / n, az + (bz - az) * (k + 0.5) / n])
+            q["alts"] = alts[:40]
+        if not q["name"]: continue
+        G["POIS"].append(q)
+
+
 def init():
-    load_dem(); load_catastro(); load_pois(); G["SEA"] = build_sea()
+    load_dem(); load_catastro(); load_pois(); load_landmarks(); G["SEA"] = build_sea()
 
 
 def main():
