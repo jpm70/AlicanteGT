@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { heightAt, toLatLng, toLocal } from './geo';
 import type { CarState } from '../types/game';
 import type { Signals } from './signals';
-import { CarSet, VARIANT_IDS, VARIANT_LEN, VehicleLib, type VariantId } from './vehicles';
+import { CarSet, MOVING_IDS, VARIANT_IDS, VARIANT_LEN, VehicleLib, type VariantId } from './vehicles';
 
 /** Vía conducible de OSM: [id, clase, sentido (0 doble, 1 único, 2 único inverso), ancho, puntos]. */
 export type RoadRec = [number, string, number, number, number[][]];
@@ -13,6 +13,8 @@ export interface Way { id: number; cls: string; ow: number; w: number; pts: numb
 interface Agent {
   way: Way; dir: 1 | -1; s: number; v: number; vmax: number; lane: number;
   x: number; z: number; fx: number; fz: number; col: number; variant: VariantId; len: number; hold: number;
+  /** salida elegida con antelación (para poner el intermitente) y luces de freno */
+  plan?: { way: Way; atStart: boolean }; sig: -1 | 0 | 1; braking: boolean;
 }
 
 /** Colores de carrocería: mucho blanco, gris, plata y negro, como en la calle. */
@@ -25,7 +27,10 @@ const SPEED: Record<string, number> = { trunk: 15, primary: 13, secondary: 11.5,
 const MAX_AGENTS = 56;
 const TARGET_AGENTS = 16;
 /** Capacidad de cada variante en circulación. */
-const CAP: Record<VariantId, number> = { sedan: 40, hatch: 40, suv: 40, van: 16, taxi: 16, bus: 8 };
+const CAP: Record<VariantId, number> = { sedan: 40, hatch: 40, suv: 40, van: 16, taxi: 16, bus: 8, police: 0, ambulance: 0, fire: 0 };
+/** Vehículos de emergencia aparcados junto a comisarías, bomberos y hospitales: [x, z, yaw, tipo (0 policía, 1 ambulancia, 2 bomberos)]. */
+export type SpecialRec = number[];
+const SPECIAL: { v: VariantId; hex: number }[] = [{ v: 'police', hex: 0xf4f4f6 }, { v: 'ambulance', hex: 0xf4f4f0 }, { v: 'fire', hex: 0xc41e1e }];
 
 const NODE = 1.5;
 export const nodeKey = (x: number, z: number) => `${Math.round(x / NODE)},${Math.round(z / NODE)}`;
@@ -51,10 +56,11 @@ export class Traffic {
   private tmpS = new THREE.Vector3(1, 1, 1);
   private tmpC = new THREE.Color();
   private rnd = Math.random;
+  private clock = 0;
   enabled = true;
 
   constructor(private scene: THREE.Scene) {
-    for (const v of VARIANT_IDS) {
+    for (const v of MOVING_IDS) {
       const s = this.lib.makeSet(v, CAP[v], false);
       s.count = 0;
       s.addTo(scene);
@@ -113,7 +119,7 @@ export class Traffic {
     return this.tmpC.multiplyScalar(k);
   }
 
-  addTile(key: string, roads: RoadRec[], parked: ParkedRec[]) {
+  addTile(key: string, roads: RoadRec[], parked: ParkedRec[], special: SpecialRec[] = []) {
     for (const [id, cls, ow, w, pts] of roads) {
       let way = this.ways.get(id);
       if (!way) {
@@ -126,6 +132,18 @@ export class Traffic {
       }
       way.tiles.add(key);
     }
+    const spSets: CarSet[] = [];
+    for (let t = 0; t < SPECIAL.length; t++) {
+      const list = special.filter((r) => r[3] === t);
+      if (!list.length) continue;
+      const set = this.lib.makeSet(SPECIAL[t].v, list.length, true);
+      list.forEach(([x, z, yaw], j) => {
+        this.pose(this.tmpM, x, z, Math.sin(yaw), Math.cos(yaw), t === 2 ? 4 : 1.8);
+        set.set(j, this.tmpM, this.tmpC.setHex(SPECIAL[t].hex));
+      });
+      set.flush(); set.addTo(this.scene); spSets.push(set);
+    }
+    if (spSets.length) this.parked.set(key + '#sp', spSets);
     if (parked.length) {
       const groups = new Map<VariantId, { i: number; rec: number[] }[]>();
       parked.forEach((rec, i) => {
@@ -151,8 +169,10 @@ export class Traffic {
   }
 
   removeTile(key: string) {
-    const sets = this.parked.get(key);
-    if (sets) { for (const s of sets) { s.removeFrom(this.scene); s.dispose(); } this.parked.delete(key); }
+    for (const k of [key, key + '#sp']) {
+      const sets = this.parked.get(k);
+      if (sets) { for (const s of sets) { s.removeFrom(this.scene); s.dispose(); } this.parked.delete(k); }
+    }
     for (const [id, way] of this.ways) {
       if (way.tiles.delete(key) && way.tiles.size === 0) { this.ways.delete(id); this.dirty = true; }
     }
@@ -214,7 +234,7 @@ export class Traffic {
       if (this.agents.filter((q) => q.variant === variant).length >= CAP[variant]) continue;
       const a: Agent = {
         way: w, dir, s: 4 + this.rnd() * (w.len - 8), v: 0, vmax: (SPEED[w.cls] ?? 7) * (0.8 + this.rnd() * 0.3) * (variant === 'bus' ? 0.85 : 1), lane: this.laneFor(w),
-        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0,
+        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0, sig: 0, braking: false,
       };
       this.place(a);
       const dx = a.x - px, dz = a.z - pz, d = Math.hypot(dx, dz);
@@ -227,12 +247,12 @@ export class Traffic {
     }
   }
 
-  /** Elige la vía de salida en el extremo al que llega el coche; false = callejón sin salida (se da la vuelta o desaparece). */
-  private turn(a: Agent): boolean {
+  /** Elige con antelación la vía de salida en el extremo al que llega el coche (null = callejón sin salida). */
+  private choose(a: Agent): { way: Way; atStart: boolean } | null {
     const w = a.way;
     const end = a.dir > 0 ? w.pts[w.pts.length - 1] : w.pts[0];
     const cands = (this.ends.get(nodeKey(end[0], end[1])) ?? []).filter((c) => c.way !== w && (c.atStart ? c.way.ow !== 2 : c.way.ow !== 1));
-    if (!cands.length) return false;
+    if (!cands.length) return null;
     let tot = 0;
     const wts = cands.map((c) => {
       const p = c.way.pts, q = c.atStart ? p[1] : p[p.length - 2];
@@ -242,7 +262,22 @@ export class Traffic {
     });
     let r = this.rnd() * tot, k = 0;
     while (k < cands.length - 1 && r > wts[k]) { r -= wts[k]; k++; }
-    const c = cands[k];
+    return cands[k];
+  }
+
+  /** Intermitente según el giro previsto: +1 derecha, -1 izquierda, 0 recto. */
+  private signalFor(a: Agent, c: { way: Way; atStart: boolean }): -1 | 0 | 1 {
+    const end = a.dir > 0 ? a.way.pts[a.way.pts.length - 1] : a.way.pts[0];
+    const p = c.way.pts, q = c.atStart ? p[1] : p[p.length - 2];
+    let dx = q[0] - end[0], dz = q[1] - end[1]; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+    const cross = a.fx * dz - a.fz * dx;
+    return cross > 0.4 ? 1 : cross < -0.4 ? -1 : 0;
+  }
+
+  private turn(a: Agent): boolean {
+    const c = a.plan ?? this.choose(a);
+    a.plan = undefined; a.sig = 0;
+    if (!c) return false;
     a.way = c.way; a.dir = c.atStart ? 1 : -1; a.s = c.atStart ? 0.05 : c.way.len - 0.05; a.lane = this.laneFor(c.way);
     a.vmax = (SPEED[c.way.cls] ?? 7) * (0.8 + this.rnd() * 0.3) * (a.variant === 'bus' ? 0.85 : 1);
     return true;
@@ -256,6 +291,7 @@ export class Traffic {
 
   update(dt: number, px: number, pz: number, headingRad: number, playerSpeed: number, density = 1, obstacles: { x: number; z: number }[] = []) {
     if (!this.enabled) { for (const s of this.sets.values()) s.count = 0; return; }
+    this.clock += dt;
     if (this.dirty) this.rebuild();
     const hx = Math.sin(headingRad), hz = -Math.cos(headingRad);
     if (this.agents.length < Math.round(TARGET_AGENTS * density) && this.wayList.length) this.spawn(px, pz, hx, hz);
@@ -265,6 +301,7 @@ export class Traffic {
       if (Math.hypot(a.x - px, a.z - pz) > 250) continue;
       // objetivo de velocidad: la de su vía, más lenta al llegar a un cruce y frenando ante lo que tenga delante
       const toEnd = a.dir > 0 ? a.way.len - a.s : a.s;
+      if (!a.plan && toEnd < 36) { const c = this.choose(a); if (c) { a.plan = c; a.sig = this.signalFor(a, c); } }   // decide el giro y pone el intermitente
       let target = a.vmax * (toEnd < 16 ? 0.4 + 0.6 * (toEnd / 16) : 1);
       const reach = 6 + a.len * 0.5 + a.v * 0.9;
       for (const o of this.agents) {
@@ -293,7 +330,9 @@ export class Traffic {
         if (along > 0 && along < reach + 4 && Math.abs(rx * -a.fz + rz * a.fx) < 2.4) target = Math.min(target, along < stop ? 0 : Math.max(0, (along - stop) * 0.7));
       }
       if (a.hold > 0) { a.hold -= dt; target = 0; }
+      const v0 = a.v;
       a.v += Math.max(-8 * dt, Math.min(3 * dt, target - a.v));
+      a.braking = a.v < v0 - 0.02 * 8 * dt || (a.v < 0.4 && target < 0.2);
       a.s += a.dir * a.v * dt;
       if (a.s < 0 || a.s > a.way.len) {
         if (!this.turn(a)) {
@@ -312,10 +351,11 @@ export class Traffic {
       if (n >= CAP[a.variant]) continue;
       this.pose(this.tmpM, a.x, a.z, a.fx, a.fz, a.variant === 'bus' ? 4 : 1.8);
       const hex = a.variant === 'taxi' ? TAXI_PAINT : a.variant === 'bus' ? BUS_PAINT : PAINT[a.col];
-      set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id));
+      const blink = Math.floor(this.clock * 2.6) % 2 === 0 ? 1 : 0;
+      set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id), a.braking ? 3 : 1, a.sig < 0 ? blink : 0, a.sig > 0 ? blink : 0);
       counts.set(a.variant, n + 1);
     }
-    for (const v of VARIANT_IDS) { const s = this.sets.get(v)!; s.count = counts.get(v) ?? 0; s.flush(); }
+    for (const v of MOVING_IDS) { const s = this.sets.get(v)!; s.count = counts.get(v) ?? 0; s.flush(); }
     if (this.lightLevel > 0) {
       const n = Math.min(this.agents.length, MAX_AGENTS);
       for (let i = 0; i < n; i++) {
@@ -368,10 +408,10 @@ export class Traffic {
     const rx = -hz, rz = hx;
     VARIANT_IDS.forEach((v, i) => {
       const set = this.lib.makeSet(v, 1, false);
-      const side = (i - 2.5) * 6.2;
+      const side = (i - 4) * 6.6;
       const dist = 16 + (v === 'bus' ? 4 : 0);
-      this.pose(this.tmpM, px + hx * dist + rx * side, pz + hz * dist + rz * side, -hx, -hz, 1.8);
-      set.set(0, this.tmpM, this.tmpC.setHex(v === 'taxi' ? TAXI_PAINT : v === 'bus' ? BUS_PAINT : PAINT[(i * 3) % PAINT.length]));
+      this.pose(this.tmpM, px + hx * dist + rx * side, pz + hz * dist + rz * side, hx, hz, 1.8);   // de espaldas, para ver los pilotos
+      set.set(0, this.tmpM, this.tmpC.setHex(v === 'taxi' ? TAXI_PAINT : v === 'bus' ? BUS_PAINT : v === 'police' ? 0xf4f4f6 : v === 'ambulance' ? 0xf4f4f0 : v === 'fire' ? 0xc41e1e : PAINT[(i * 3) % PAINT.length]), i % 2 ? 3 : 1, i === 1 ? 1 : 0, i === 2 ? 1 : 0);
       set.flush(); set.addTo(this.scene);
     });
   }
@@ -380,7 +420,7 @@ export class Traffic {
     return {
       ways: this.ways.size, usable: this.wayList.length, agents: this.agents.length, parkedTiles: this.parked.size,
       parked: [...this.parked.values()].reduce((n, sets) => n + sets.reduce((m, s) => m + s.count, 0), 0),
-      variants: Object.fromEntries(VARIANT_IDS.map((v) => [v, this.agents.filter((q) => q.variant === v).length])),
+      variants: Object.fromEntries(MOVING_IDS.map((v) => [v, this.agents.filter((q) => q.variant === v).length])),
       sample: this.agents.slice(0, 3).map((q) => [Math.round(q.x), Math.round(q.z), +q.v.toFixed(1)]),
     };
   }

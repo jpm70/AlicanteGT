@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-export type VariantId = 'sedan' | 'hatch' | 'suv' | 'van' | 'taxi' | 'bus';
-export const VARIANT_IDS: VariantId[] = ['sedan', 'hatch', 'suv', 'van', 'taxi', 'bus'];
+export type VariantId = 'sedan' | 'hatch' | 'suv' | 'van' | 'taxi' | 'bus' | 'police' | 'ambulance' | 'fire';
+export const VARIANT_IDS: VariantId[] = ['sedan', 'hatch', 'suv', 'van', 'taxi', 'bus', 'police', 'ambulance', 'fire'];
+/** Variantes que circulan (las de emergencia solo se aparcan junto a sus edificios). */
+export const MOVING_IDS: VariantId[] = ['sedan', 'hatch', 'suv', 'van', 'taxi', 'bus'];
 /** Largo aproximado (m) de cada variante: separaciones al seguir y colisiones. */
-export const VARIANT_LEN: Record<VariantId, number> = { sedan: 4.3, hatch: 4.0, suv: 4.55, van: 5.1, taxi: 4.3, bus: 11.8 };
+export const VARIANT_LEN: Record<VariantId, number> = { sedan: 4.3, hatch: 4.0, suv: 4.55, van: 5.1, taxi: 4.3, bus: 11.8, police: 4.3, ambulance: 5.1, fire: 9.2 };
 
 /** Superelipse (esquinas redondeadas) de n puntos con semiejes a, b y exponente e. */
 function squircle(n: number, a: number, b: number, e: number): [number, number][] {
@@ -91,9 +93,12 @@ interface Spec {
   headY: number; tailY: number; plateY: number;
   mirrorZ: number; mirrorY: number;
   roofSign?: boolean; bus?: boolean; van?: boolean;
+  /** barra de luces en el techo, franja lateral de color y escalera (emergencias) */
+  lightBar?: boolean; stripe?: number[]; ladder?: boolean;
 }
 
 const SPECS: Record<VariantId, Spec> = {
+  police: null as unknown as Spec, ambulance: null as unknown as Spec, fire: null as unknown as Spec,
   sedan: {
     st: [[-2.15, 0.62, 0.42, 0.8], [-2.05, 0.78, 0.34, 0.93], [-1.75, 0.87, 0.3, 0.99], [-1.0, 0.9, 0.27, 0.99], [0.0, 0.91, 0.27, 0.96], [0.9, 0.9, 0.27, 0.94], [1.5, 0.87, 0.28, 0.88], [1.95, 0.8, 0.32, 0.77], [2.15, 0.66, 0.4, 0.64]],
     cab: [[0.94, -1.78, 0.98, 0.79], [1.1, -1.62, 0.66, 0.75], [1.28, -1.3, 0.28, 0.68], [1.42, -0.98, -0.02, 0.6]],
@@ -126,7 +131,22 @@ const SPECS: Record<VariantId, Spec> = {
   },
 };
 
-interface VariantGeo { paint: THREE.BufferGeometry; trim: THREE.BufferGeometry; glass: THREE.BufferGeometry; lights: THREE.BufferGeometry }
+SPECS.police = { ...SPECS.sedan, lightBar: true, stripe: [0.08, 0.2, 0.62] };
+SPECS.ambulance = { ...SPECS.van, lightBar: true, stripe: [0.85, 0.12, 0.1] };
+SPECS.fire = {
+  st: [[-4.6, 1.2, 0.5, 2.9], [-4.4, 1.25, 0.4, 3.1], [-3.0, 1.25, 0.4, 3.15], [3.0, 1.25, 0.4, 3.15], [3.8, 1.2, 0.45, 2.9], [4.5, 1.0, 0.5, 2.3]],
+  cab: [[1.6, 2.9, 4.3, 1.2], [2.2, 3.0, 4.2, 1.15], [2.75, 3.15, 4.0, 1.05]],
+  wheelZ: [-2.8, 2.9], wheelR: 0.55, track: 1.1, hwMid: 1.25, doors: [2.6], front: 4.6, rear: -4.6, headY: 0.9, tailY: 1.2, plateY: 0.8, mirrorZ: 3.9, mirrorY: 2.0,
+  van: true, lightBar: true, stripe: [0.95, 0.95, 0.9], ladder: true,
+};
+
+interface VariantGeo {
+  paint: THREE.BufferGeometry; trim: THREE.BufferGeometry; glass: THREE.BufferGeometry;
+  /** faros (y rótulo del autobús) */ lights: THREE.BufferGeometry;
+  /** pilotos traseros */ tail: THREE.BufferGeometry;
+  /** intermitentes izquierdos / derechos (esquina delantera y trasera) */ sigL: THREE.BufferGeometry; sigR: THREE.BufferGeometry;
+  /** faros + pilotos juntos (coches aparcados) */ lightsAll: THREE.BufferGeometry;
+}
 
 /**
  * Vehículo modelado por secciones (eje largo +Z): carrocería redondeada, cabina inclinada con cristal reflectante, techo,
@@ -135,7 +155,7 @@ interface VariantGeo { paint: THREE.BufferGeometry; trim: THREE.BufferGeometry; 
  */
 function buildVariant(id: VariantId): VariantGeo {
   const sp = SPECS[id];
-  const paint: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [], glass: THREE.BufferGeometry[] = [], lights: THREE.BufferGeometry[] = [];
+  const paint: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [], glass: THREE.BufferGeometry[] = [], lights: THREE.BufferGeometry[] = [], tail: THREE.BufferGeometry[] = [], sigL: THREE.BufferGeometry[] = [], sigR: THREE.BufferGeometry[] = [];
   const NB = 18;
   const rings = sp.st.map(([z, hw, yb, yt]) => squircle(NB, hw, (yt - yb) / 2, sp.bus || sp.van ? 4.2 : 3.2).map(([x, y]) => [x, (yt + yb) / 2 + y, z]));
   paint.push(loft(rings, true, true));
@@ -151,7 +171,10 @@ function buildVariant(id: VariantId): VariantGeo {
   trim.push(colorVerts(flatBox(sp.hwMid * 1.0, sp.bus ? 0.3 : 0.1, 0.05, 0, sp.bus ? 1.0 : sp.headY - 0.2, sp.front + 0.015), [0.03, 0.03, 0.03]));
   for (const sx of [-1, 1]) {
     lights.push(colorVerts(flatBox(sp.bus ? 0.5 : 0.38, 0.14, 0.09, sx * sp.hwMid * 0.68, sp.headY, sp.front - 0.08), [0.95, 0.95, 0.85]));
-    lights.push(colorVerts(flatBox(sp.bus ? 0.4 : 0.38, 0.12, 0.09, sx * sp.hwMid * 0.7, sp.tailY, sp.rear + 0.08), [0.85, 0.06, 0.06]));
+    tail.push(colorVerts(flatBox(sp.bus ? 0.4 : 0.38, 0.12, 0.09, sx * sp.hwMid * 0.7, sp.tailY, sp.rear + 0.08), [0.85, 0.06, 0.06]));
+    const sg = sx < 0 ? sigL : sigR;                                                                               // intermitentes ámbar en las cuatro esquinas
+    sg.push(colorVerts(flatBox(0.16, 0.08, 0.07, sx * sp.hwMid * 0.9, sp.headY - 0.1, sp.front - 0.05), [1, 0.62, 0.08]));
+    sg.push(colorVerts(flatBox(0.16, 0.08, 0.07, sx * sp.hwMid * 0.9, sp.tailY + 0.12, sp.rear + 0.05), [1, 0.62, 0.08]));
     paint.push(flatBox(0.12, 0.09, 0.2, sx * (sp.hwMid + 0.07), sp.mirrorY, sp.mirrorZ));
     for (const sz of sp.wheelZ) {
       trim.push(colorVerts(cyl(sp.wheelR, 0.24, sx * sp.track, sp.wheelR, sz, 16), [0.03, 0.03, 0.035]));
@@ -172,32 +195,64 @@ function buildVariant(id: VariantId): VariantGeo {
   } else if (!sp.van) {
     trim.push(colorVerts(flatBox(0.025, 0.2, 0.025, 0.4, roofR[0][1] + 0.14, sp.cab[3][1] + 0.1), dark));   // antena
   }
+  if (sp.stripe) {                                                                                      // franja lateral
+    const zc = sp.van ? 0.4 : -0.1, ln = id === 'fire' ? 6.4 : sp.van ? 3.8 : 2.4;
+    for (const sx of [-1, 1]) trim.push(colorVerts(flatBox(0.02, 0.2, ln, sx * (sp.hwMid + 0.01), id === 'fire' ? 1.3 : 0.7, id === 'fire' ? 0 : zc), sp.stripe));
+  }
+  if (sp.lightBar) {                                                                                     // barra de luces: azul y rojo
+    const ry = roofR[0][1] + 0.12, rz = id === 'fire' ? 3.5 : sp.van ? 1.5 : (sp.cab[3][1] + sp.cab[3][2]) / 2;
+    trim.push(colorVerts(flatBox(0.9, 0.07, 0.3, 0, ry, rz), [0.12, 0.12, 0.14]));
+    lights.push(colorVerts(flatBox(0.42, 0.11, 0.26, -0.22, ry + 0.08, rz), [0.1, 0.25, 1.0]));
+    lights.push(colorVerts(flatBox(0.42, 0.11, 0.26, 0.22, ry + 0.08, rz), [1.0, 0.1, 0.1]));
+  }
+  if (sp.ladder) {                                                                                       // escalera y cuerpo de bomba
+    trim.push(colorVerts(flatBox(0.5, 0.18, 6.4, 0, 3.3, -0.9), [0.72, 0.72, 0.75]));
+    trim.push(colorVerts(flatBox(1.6, 0.9, 5.0, 0, 3.35, -1.5), [0.8, 0.12, 0.1]));
+  }
   return {
     paint: mergeGeometries(paint, false)!, trim: mergeGeometries(trim, false)!,
-    glass: mergeGeometries(glass, false)!, lights: mergeGeometries(lights, false)!,
+    glass: mergeGeometries(glass, false)!, lights: mergeGeometries(lights, false)!, tail: mergeGeometries(tail, false)!,
+    sigL: mergeGeometries(sigL, false)!, sigR: mergeGeometries(sigR, false)!, lightsAll: mergeGeometries([...lights, ...tail], false)!,
   };
 }
 
-/** Mallas instanciadas de un vehículo (pintura teñida, accesorios, cristal y luces) que comparten matrices. */
+/** Mallas instanciadas de un vehículo (pintura teñida, accesorios, cristal y luces) que comparten matrices.
+ *  Los coches en marcha llevan además pilotos (más brillo al frenar) e intermitentes que parpadean; los aparcados, las luces fijas. */
 export class CarSet {
   readonly paint: THREE.InstancedMesh;
   readonly trim: THREE.InstancedMesh;
   readonly glass: THREE.InstancedMesh;
   readonly lights: THREE.InstancedMesh;
-  constructor(g: VariantGeo, mats: { paint: THREE.Material; trim: THREE.Material; glass: THREE.Material; lights: THREE.Material }, count: number) {
+  readonly tail: THREE.InstancedMesh | null;
+  readonly sigL: THREE.InstancedMesh | null;
+  readonly sigR: THREE.InstancedMesh | null;
+  private tmpC = new THREE.Color();
+  constructor(g: VariantGeo, mats: { paint: THREE.Material; trim: THREE.Material; glass: THREE.Material; lights: THREE.Material }, count: number, moving: boolean) {
     this.paint = new THREE.InstancedMesh(g.paint, mats.paint, count);
     this.trim = new THREE.InstancedMesh(g.trim, mats.trim, count);
     this.glass = new THREE.InstancedMesh(g.glass, mats.glass, count);
-    this.lights = new THREE.InstancedMesh(g.lights, mats.lights, count);
-    for (const m of this.all()) { m.frustumCulled = false; m.castShadow = m !== this.lights; }
+    this.lights = new THREE.InstancedMesh(moving ? g.lights : g.lightsAll, mats.lights, count);
+    this.tail = moving ? new THREE.InstancedMesh(g.tail, mats.lights, count) : null;
+    this.sigL = moving ? new THREE.InstancedMesh(g.sigL, mats.lights, count) : null;
+    this.sigR = moving ? new THREE.InstancedMesh(g.sigR, mats.lights, count) : null;
+    for (const m of this.all()) { m.frustumCulled = false; m.castShadow = !(m === this.lights || m === this.tail || m === this.sigL || m === this.sigR); }
   }
-  private all() { return [this.paint, this.trim, this.glass, this.lights]; }
-  set(i: number, m: THREE.Matrix4, color: THREE.Color) { for (const x of this.all()) x.setMatrixAt(i, m); this.paint.setColorAt(i, color); }
+  private all(): THREE.InstancedMesh[] { return [this.paint, this.trim, this.glass, this.lights, ...(this.tail ? [this.tail, this.sigL!, this.sigR!] : [])]; }
+  /** tailK: brillo de los pilotos (1 normal, más al frenar); sigL/sigR: 1 = intermitente encendido. */
+  set(i: number, m: THREE.Matrix4, color: THREE.Color, tailK = 1, sigL = 0, sigR = 0) {
+    for (const x of this.all()) x.setMatrixAt(i, m);
+    this.paint.setColorAt(i, color);
+    if (this.tail) {
+      this.tail.setColorAt(i, this.tmpC.setScalar(tailK));
+      this.sigL!.setColorAt(i, this.tmpC.setScalar(sigL * 2.4));
+      this.sigR!.setColorAt(i, this.tmpC.setScalar(sigR * 2.4));
+    }
+  }
   get count() { return this.paint.count; }
   set count(n: number) { for (const x of this.all()) x.count = n; }
   flush() {
     for (const m of this.all()) m.instanceMatrix.needsUpdate = true;
-    if (this.paint.instanceColor) this.paint.instanceColor.needsUpdate = true;
+    for (const m of [this.paint, this.tail, this.sigL, this.sigR]) if (m?.instanceColor) m.instanceColor.needsUpdate = true;
   }
   addTo(scene: THREE.Scene) { scene.add(...this.all()); }
   removeFrom(scene: THREE.Scene) { scene.remove(...this.all()); }
@@ -223,7 +278,7 @@ export class VehicleLib {
   }
 
   makeSet(v: VariantId, count: number, parked: boolean): CarSet {
-    return new CarSet(this.geo(v), parked ? { ...this.mats, lights: this.parkedLights } : this.mats, count);
+    return new CarSet(this.geo(v), parked ? { ...this.mats, lights: this.parkedLights } : this.mats, count, !parked);
   }
 
   setLightLevel(lv: number) {
@@ -232,7 +287,7 @@ export class VehicleLib {
   }
 
   dispose() {
-    for (const g of this.geos.values()) { g.paint.dispose(); g.trim.dispose(); g.glass.dispose(); g.lights.dispose(); }
+    for (const g of this.geos.values()) { g.paint.dispose(); g.trim.dispose(); g.glass.dispose(); g.lights.dispose(); g.tail.dispose(); g.sigL.dispose(); g.sigR.dispose(); g.lightsAll.dispose(); }
     for (const m of Object.values(this.mats)) m.dispose();
     this.parkedLights.dispose();
   }
