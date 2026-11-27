@@ -97,7 +97,29 @@ def draw_icon(d, cat, cx, cy, r, c):
         d.rectangle([cx - r, cy, cx + r, cy + r * 0.45], fill=c); d.rectangle([cx - r, cy - r * 0.6, cx - r * 0.8, cy + r * 0.8], fill=c); d.ellipse([cx - r * 0.7, cy - r * 0.35, cx - r * 0.3, cy + r * 0.05], fill=c)
 
 
+def draw_atu(im, idx):
+    """Rótulo de ATU Academia Técnica Universitaria: azul corporativo, «ATU» grande y el nombre completo debajo."""
+    col, row = idx % COLS, idx // COLS
+    x0, y0 = col * CELL_W, row * CELL_H
+    x1, y1 = x0 + CELL_W - 1, y0 + CELL_H - 1
+    d = ImageDraw.Draw(im)
+    blue, deep, gold = (22, 74, 168), (12, 44, 112), (255, 205, 50)
+    for yy in range(CELL_H): d.line([x0, y0 + yy, x1, y0 + yy], fill=_mix(blue, deep, yy / CELL_H))
+    d.rectangle([x0 + 3, y0 + 3, x1 - 3, y1 - 3], outline=(255, 255, 255), width=2)
+    d.rectangle([x0 + 3, y1 - 8, x1 - 3, y1 - 3], fill=gold)
+    fa = font(34, "arialbd.ttf")
+    d.text((x0 + 14, y0 + 6), "ATU", font=fa, fill=(255, 255, 255))
+    wa = d.textlength("ATU", font=fa)
+    d.line([x0 + 14 + wa + 10, y0 + 10, x0 + 14 + wa + 10, y0 + 40], fill=gold, width=2)
+    f1, f2 = font(17, "arialbd.ttf"), font(17, "arialbd.ttf")
+    tx = x0 + 14 + wa + 20
+    d.text((tx, y0 + 9), "Academia Técnica", font=f1, fill=(255, 255, 255))
+    d.text((tx, y0 + 28), "Universitaria", font=f2, fill=gold)
+
+
 def draw_cell(im, idx, name, catsub):
+    if name.strip().upper().startswith("ATU"):
+        draw_atu(im, idx); return
     cat, _, sub = catsub.partition("|")
     col, row = idx % COLS, idx // COLS
     x0, y0 = col * CELL_W, row * CELL_H
@@ -202,6 +224,8 @@ def place_signs(pois, footprints, roads_near, hf, bounds):
             if not ok_: continue
             used.append((cx, cz))
             out.append((p["name"], p["cat"] + "|" + p.get("sub", ""), cx, cz, nx, nz, W, float(hf(cx, cz)) + (1.4 if big else 0.0)))
+            if p.get("glass"):                                  # el mismo rótulo, en vinilo sobre las cristaleras del portal (a pie de calle)
+                out.append((p["name"], p["cat"] + "|" + p.get("sub", ""), cx, cz, nx, nz, min(W, 3.2), float(hf(cx, cz)), True))
     return out
 
 
@@ -232,9 +256,12 @@ def signs_mesh(signs, atlas_path):
         if np.dot(nrm, (nx, 0, nz)) >= 0: F.extend([[b, b + 1, b + 2], [b, b + 2, b + 3]])
         else: F.extend([[b, b + 2, b + 1], [b, b + 3, b + 2]])
 
-    for i, (name, cat, cx, cz, nx, nz, W, y0) in enumerate(signs, start=1):
+    for i, (name, cat, cx, cz, nx, nz, W, y0, *low) in enumerate(signs, start=1):
         c = (cx, cz, nx, nz)
         hh = W * CELL_H / CELL_W                                 # altura según la proporción del atlas
+        if low and low[0]:                                       # vinilo en las cristaleras: sin marco, a la altura de la puerta
+            quad(c, y0 + 1.25, y0 + 1.25 + hh, W, 0.16, i)
+            continue
         quad(c, y0 + 3.32, y0 + 3.48 + hh, W + 0.16, 0.10, 0)    # marco
         quad(c, y0 + 3.40, y0 + 3.40 + hh, W, 0.14, i)           # rótulo
     V = np.array(V)

@@ -101,11 +101,11 @@ def make_boat(L, kind, seed):
     return m
 
 
-def place_boats(piers_lines, water, tile, port_box, seed0=17):
+def place_boats(piers_lines, water, tile, port_box, seed0=17, placed=None):
     """Atraca barcos a ambos lados de cada pantalán de `piers_lines` (LineString en m locales) dentro de `water` (polígono de agua libre).
     Devuelve lista de (cx, cz, yaw, L, kind, seed) cuyo centro cae en `tile` (x0, z0, x1, z1)."""
     out = []
-    placed = []
+    if placed is None: placed = []
     shapely.prepare(water)
     px0, pz0, px1, pz1 = port_box
     for li, ln in enumerate(sorted(piers_lines, key=lambda l: (round(l.coords[0][0], 1), round(l.coords[0][1], 1)))):
@@ -135,6 +135,60 @@ def place_boats(piers_lines, water, tile, port_box, seed0=17):
                     s += Wd + 1.1 + rnd.rand() * 0.6
                 else:
                     s += 2.0
+    return out
+
+
+def place_quay_boats(sea, water, piers_lines, tile, port_box, placed, seed0=91):
+    """Barcos amarrados de popa al muelle (primera línea del puerto): recorre la orilla del mar dentro del puerto deportivo
+    (a menos de 150 m de algún pantalán) y coloca un barco cada pocos metros, perpendicular a la orilla y sin pisar a otros.
+    Determinista por orilla (misma colocación en todas las teselas). Devuelve lista como `place_boats`."""
+    from shapely.geometry import box
+    from shapely.ops import unary_union
+    out = []
+    px0, pz0, px1, pz1 = port_box
+    lines = [l for l in piers_lines if px0 - 120 <= l.centroid.x <= px1 + 120 and pz0 - 120 <= l.centroid.y <= pz1 + 120]
+    if not lines or sea is None or sea.is_empty: return out
+    near = unary_union([l.buffer(150) for l in lines]); shapely.prepare(near)
+    shapely.prepare(water)
+    loc = sea.intersection(box(px0 - 60, pz0 - 60, px1 + 60, pz1 + 60))
+    polys = list(loc.geoms) if hasattr(loc, "geoms") else [loc]
+    rings = []
+    for pg in polys:
+        if getattr(pg, "geom_type", "") != "Polygon": continue
+        rings.append(LineString(pg.exterior.coords))
+        rings.extend(LineString(r.coords) for r in pg.interiors)
+    rings.sort(key=lambda r: (round(r.coords[0][0], 1), round(r.coords[0][1], 1), round(r.length)))
+    for ring in rings:
+        if ring.length < 20: continue
+        rnd = np.random.RandomState(int(abs(ring.coords[0][0]) * 7 + abs(ring.coords[0][1]) * 13) % 100000 + seed0)
+        s = 2.0
+        while s < ring.length - 2.0:
+            p = ring.interpolate(s)
+            if not (px0 <= p.x <= px1 and pz0 <= p.y <= pz1) or not near.contains(p):
+                s += 3.0; continue
+            q = ring.interpolate(min(s + 1.5, ring.length)); r = ring.interpolate(max(s - 1.5, 0))
+            tx, tz = q.x - r.x, q.y - r.y; tl = math.hypot(tx, tz) or 1.0; tx, tz = tx / tl, tz / tl
+            nx, nz = -tz, tx
+            if not water.contains(Point(p.x + nx * 3.0, p.y + nz * 3.0)):
+                nx, nz = -nx, -nz
+                if not water.contains(Point(p.x + nx * 3.0, p.y + nz * 3.0)):
+                    s += 3.0; continue
+            kr = rnd.rand()
+            kind = "sail" if kr < 0.40 else "super" if kr > 0.95 else "motor"
+            L = (rnd.uniform(8.5, 14.5) if kind == "sail" else rnd.uniform(26, 36) if kind == "super" else rnd.uniform(8, 19))
+            Wd = L * (0.27 if kind == "sail" else 0.31)
+            gap = rnd.rand()
+            cx, cz = p.x + nx * (L / 2 + 0.7), p.y + nz * (L / 2 + 0.7)
+            rect = Polygon([(-L / 2, -Wd / 2 - 0.4), (L / 2, -Wd / 2 - 0.4), (L / 2, Wd / 2 + 0.4), (-L / 2, Wd / 2 + 0.4)])
+            yaw = math.atan2(nz, nx)                            # proa hacia fuera del muelle
+            rect = affinity.translate(affinity.rotate(rect, yaw, origin=(0, 0), use_radians=True), cx, cz)
+            if gap < 0.88 and water.contains(rect) and not any(rect.intersects(o) for o in placed):
+                placed.append(rect)
+                if tile[0] <= cx < tile[2] and tile[1] <= cz < tile[3]:
+                    out.append((cx, cz, yaw, L, kind, int(abs(cx) * 31 + abs(cz) * 17) % 100000))
+                s += Wd + 1.0 + rnd.rand() * 0.8
+            else:
+                s += 2.5
     return out
 
 
