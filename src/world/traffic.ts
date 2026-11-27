@@ -28,9 +28,9 @@ const MAX_AGENTS = 56;
 const TARGET_AGENTS = 16;
 /** Capacidad de cada variante en circulación. */
 const CAP: Record<VariantId, number> = { sedan: 40, hatch: 40, suv: 40, van: 16, taxi: 16, bus: 8, police: 0, ambulance: 0, fire: 0 };
-/** Vehículos de emergencia aparcados junto a comisarías, bomberos y hospitales: [x, z, yaw, tipo (0 policía, 1 ambulancia, 2 bomberos)]. */
+/** Vehículos de emergencia aparcados junto a comisarías, bomberos y hospitales: [x, z, yaw, tipo (0 policía, 1 ambulancia, 2 bomberos, 3 autobús de estación)]. */
 export type SpecialRec = number[];
-const SPECIAL: { v: VariantId; hex: number }[] = [{ v: 'police', hex: 0xf4f4f6 }, { v: 'ambulance', hex: 0xf4f4f0 }, { v: 'fire', hex: 0xc41e1e }];
+const SPECIAL: { v: VariantId; hex: number }[] = [{ v: 'police', hex: 0xf4f4f6 }, { v: 'ambulance', hex: 0xf4f4f0 }, { v: 'fire', hex: 0xc41e1e }, { v: 'bus', hex: 0x1f4e9a }];
 
 const NODE = 1.5;
 export const nodeKey = (x: number, z: number) => `${Math.round(x / NODE)},${Math.round(z / NODE)}`;
@@ -138,7 +138,7 @@ export class Traffic {
       if (!list.length) continue;
       const set = this.lib.makeSet(SPECIAL[t].v, list.length, true);
       list.forEach(([x, z, yaw], j) => {
-        this.pose(this.tmpM, x, z, Math.sin(yaw), Math.cos(yaw), t === 2 ? 4 : 1.8);
+        this.pose(this.tmpM, x, z, Math.sin(yaw), Math.cos(yaw), t >= 2 ? 4 : 1.8);
         set.set(j, this.tmpM, this.tmpC.setHex(SPECIAL[t].hex));
       });
       set.flush(); set.addTo(this.scene); spSets.push(set);
