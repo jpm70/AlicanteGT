@@ -50,7 +50,7 @@ def make_boat(L, kind, seed):
     rnd = np.random.RandomState(seed)
     m = _Mesh()
     Wd = L * (0.27 if kind == "sail" else 0.31)
-    hull = _rgba(HULLS[rnd.randint(len(HULLS))])
+    hull = _rgba(0x1b6a66) if kind == "display" else _rgba(HULLS[rnd.randint(len(HULLS))])
     T = [0.0, 0.14, 0.38, 0.6, 0.78, 0.92, 1.0]
     F_ = [0.80, 0.94, 1.0, 0.96, 0.72, 0.36, 0.0]
     s = L / 12.0
@@ -75,6 +75,19 @@ def make_boat(L, kind, seed):
             for sd in (-1, 1):
                 _quad(m, (xa, ha - 0.1, sd * (wa + 0.01)), (xb, hb - 0.1, sd * (wb + 0.01)), (xb, hb - 0.28, sd * (wb + 0.01)), (xa, ha - 0.28, sd * (wa + 0.01)), sc, cen)
     deck_y = hd * 1.18
+    if kind == "display":                                   # velero de regatas en exposición: sin mástil, con bañera, escotillas y botavara
+        for sd in (-1, 1):                                 # gráfica clara a babor y estribor (parches blancos sobre el casco)
+            for (ta, tb) in ((0.18, 0.34), (0.48, 0.56), (0.66, 0.84)):
+                for i in range(len(st) - 1):
+                    (xa, wa, ha, da), (xb, wb, hb, db) = st[i], st[i + 1]
+                    if tb <= (xa / L + 0.5) or ta >= (xb / L + 0.5): continue
+                    _quad(m, (xa, ha - 0.35, sd * (wa + 0.012)), (xb, hb - 0.35, sd * (wb + 0.012)), (xb, hb - 0.75, sd * (wb + 0.012)), (xa, ha - 0.75, sd * (wa + 0.012)), WHITE, cen)
+        _box(m, -0.40 * L, -0.20 * L, deck_y, deck_y + 0.18, Wd * 0.26, GREY)                                             # bañera
+        _box(m, -0.12 * L, 0.02 * L, deck_y, deck_y + 0.45 * s, Wd * 0.22, WHITE)                                          # escotilla principal
+        _box(m, 0.08 * L, 0.2 * L, deck_y, deck_y + 0.22 * s, Wd * 0.18, GREY)
+        _box(m, 0.02 * L - 0.1, 0.02 * L + 0.1, deck_y, deck_y + 0.5, 0.1, GREY)
+        _box(m, -0.30 * L, 0.04 * L, deck_y + 0.5, deck_y + 0.62, 0.06, GREY)                                              # botavara
+        return m
     if kind == "sail":
         cl = L * 0.34
         _box(m, -0.15 * L, -0.15 * L + cl, deck_y, deck_y + 0.55 * s, Wd * 0.26, WHITE)
@@ -190,6 +203,44 @@ def place_quay_boats(sea, water, piers_lines, tile, port_box, placed, seed0=91):
             else:
                 s += 2.5
     return out
+
+
+ORANGE = [232, 99, 26, 255]
+STEEL = [78, 82, 88, 255]
+
+
+def display_sailboat(cx, cz, y0, yaw, L=20.4, seed=5):
+    """Velero de regatas en exposición, a 3,8 m del suelo sobre soportes de acero, con su quilla (naranja) y timón a la vista.
+    Devuelve (partes [(V, F, C)], colisionadores de los soportes). `yaw`: ángulo de la proa desde +x hacia +z."""
+    m = make_boat(L, "display", seed)
+    Vb = np.array(m.V); Fb = np.array(m.F); Cb = np.array(m.C, dtype=np.uint8)
+    c, s_ = math.cos(yaw), math.sin(yaw)
+    lift = y0 + 3.8 + 0.7                                      # el casco queda a ~3,8 m del suelo
+    parts = [(np.column_stack([Vb[:, 0] * c - Vb[:, 2] * s_ + cx, Vb[:, 1] + lift, Vb[:, 0] * s_ + Vb[:, 2] * c + cz]), Fb, Cb)]
+
+    def box(lx, lz, ya, yb, sx, sz, col):
+        """Caja en coordenadas del barco (x proa, z estribor), girada con el barco."""
+        x, z = lx * c - lz * s_ + cx, lx * s_ + lz * c + cz
+        ang = -yaw
+        import trimesh
+        b = trimesh.creation.box(extents=[sx, yb - ya, sz])
+        b.apply_transform(trimesh.transformations.rotation_matrix(ang, [0, 1, 0]))
+        b.apply_translation([x, (ya + yb) / 2, z])
+        V = np.asarray(b.vertices)
+        parts.append((V, np.asarray(b.faces), np.tile(col, (len(V), 1)).astype(np.uint8)))
+        return x, z
+
+    keel_x = 0.04 * L
+    box(keel_x, 0.0, lift - 0.6 - 3.0, lift - 0.45, 1.6, 0.14, ORANGE)                       # aleta de quilla
+    box(keel_x, 0.0, lift - 0.6 - 3.5, lift - 0.6 - 3.0, 2.6, 0.5, ORANGE)                    # bulbo
+    box(-0.47 * L, 0.0, lift - 0.5 - 1.4, lift - 0.2, 0.5, 0.1, ORANGE)                       # timón
+    obst = []
+    for lx in (-0.30 * L, 0.0, 0.30 * L):                                                        # tres cunas: dos pies y una viga con refuerzo
+        for lz in (-1.5, 1.5):
+            x, z = box(lx, lz, y0, lift - 0.45, 0.3, 0.3, STEEL)
+            obst.append({"id": -8, "h": 4, "p": [[round(x + 0.5 * math.cos(a * math.pi / 4), 2), round(z + 0.5 * math.sin(a * math.pi / 4), 2)] for a in range(9)]})
+        box(lx, 0.0, lift - 0.75, lift - 0.45, 0.4, 3.4, STEEL)
+    return parts, obst
 
 
 def boats_mesh(boats, water_y, hf=None):

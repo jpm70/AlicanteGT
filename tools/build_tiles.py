@@ -20,7 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from world_config import *          # LAT0, LNG0, KLAT, KLNG, TILE, X0.., tiles(), tile_box(), ortho_px()
 from world_lib import *
 from world_decks import build_decks, _Mesh
-from world_boats import place_boats, place_quay_boats, boats_mesh
+from world_boats import place_boats, place_quay_boats, boats_mesh, display_sailboat
+from world_furniture import furniture_parts, terrace_parts
 from world_signs import place_signs, signs_mesh             # hexrgb, tri_mesh, box_at, dome_at, tower_at, fountain_at, write_glb, join_parts ...
 
 D = "tools/data/"
@@ -780,6 +781,24 @@ def build_tile(args):
                     ac = hexrgb(AWN[(hsh >> 16) % len(AWN)]); dp = 1.25
                     det.quad([pt(a0, y0 + 3.15, o), pt(a1, y0 + 3.15, o), pt(a1, y0 + 2.75, dp), pt(a0, y0 + 2.75, dp)], (nx_, 0.6, nz_), ac)
                     det.quad([pt(a0, y0 + 2.75, dp), pt(a1, y0 + 2.75, dp), pt(a1, y0 + 2.5, dp), pt(a0, y0 + 2.5, dp)], want, ac)
+            # portal de la finca: marco de piedra que sobresale, dintel, hoja de puerta (madera, verde o hierro) hundida en el hueco, escalón y farol
+            has_shop = L >= 6.0 and levels >= 2 and (hsh % 100) < 50
+            if L >= 7.0 and levels >= 2 and ((not has_shop and ((hsh >> 3) % 100) < 78) or (has_shop and L >= 12.0 and ((hsh >> 3) % 100) < 35)):
+                tp = L * (0.74 if has_shop else 0.3 + ((hsh >> 9) % 40) / 100.0)
+                ox, oz = xa + tx_ * tp, za + tz_ * tp
+                stone = [214, 206, 188, 255]; stone_d = [176, 168, 152, 255]
+                leaf = [[74, 52, 34, 255], [38, 76, 58, 255], [34, 38, 44, 255], [96, 40, 36, 255]][(hsh >> 14) % 4]
+                def put(o, d, ya, yb, sx, sz, col):
+                    det.add_parts([box_at(ox + tx_ * o + nx_ * d, oz + tz_ * o + nz_ * d, y0 + ya, y0 + yb, sx, sz, ang, col)])
+                put(0, 0.04, 0.0, 2.35, 1.55, 0.10, leaf)                       # hoja de la puerta
+                put(0, 0.10, 0.9, 2.2, 1.2, 0.05, [40, 52, 62, 255])             # cristal de la hoja
+                put(-0.95, 0.12, 0.0, 2.65, 0.28, 0.26, stone)                   # jambas
+                put(0.95, 0.12, 0.0, 2.65, 0.28, 0.26, stone)
+                put(0, 0.14, 2.65, 3.0, 2.2, 0.32, stone)                        # dintel
+                put(0, 0.2, 3.0, 3.12, 2.5, 0.42, stone_d)                       # cornisamento
+                put(0, 0.5, 0.0, 0.16, 2.3, 0.7, stone_d)                        # escalón
+                if (hsh >> 18) % 100 < 55:
+                    put(1.45, 0.16, 2.2, 2.5, 0.22, 0.22, [236, 214, 150, 255])  # farol de la entrada
             if levels >= 5 and L >= 8.0 and (hsh >> 6) % 100 < 55 and nb_ < 24:
                 n = min(int(L // 7.5), 3)
                 for k in range(n):
@@ -929,6 +948,16 @@ def build_tile(args):
         _keep = [i_ for i_, p_ in enumerate(parked) if not _tz.contains(Point(p_[0], p_[1]))]
         parked = [parked[i_] for i_ in _keep]
         park_obst = [o_ for o_ in park_obst if not _tz.contains(Point(sum(q_[0] for q_ in o_["p"]) / len(o_["p"]), sum(q_[1] for q_ in o_["p"]) / len(o_["p"])))]
+    # --- mobiliario urbano y terrazas (bancos, papeleras, contenedores, marquesinas…; mesas, sillas y sombrillas con gente sentada) ---
+    fur_obst, seats = [], []
+    try:
+        _fp, fur_obst = furniture_parts(G.get("FURN", []), road_lines, roads_t, walk_t, hf, (x0, z0, x1, z1))
+        det.add_parts(_fp)
+        if bidx is not None:
+            _tp, seats = terrace_parts(G.get("POIS", []), G.get("FURN", []), bshapes, bidx, walk_t, roads_t, hf, (x0, z0, x1, z1))
+            det.add_parts(_tp)
+    except Exception as ex_:
+        print("mobiliario:", tx, tz, repr(ex_), flush=True)
     DRIVE_K = ("primary", "secondary", "tertiary", "residential", "unclassified", "living_street", "trunk", "primary_link", "secondary_link", "tertiary_link")
     roads_out = [[r["id"], r["k"], (0 if not r["ow"] else 2 if r["rv"] else 1), round(r["w"], 1), [[round(x_, 1), round(z_, 1)] for x_, z_ in r["p"]]]
                  for r in road_lines if r["k"] in DRIVE_K and len(r["p"]) >= 2]
@@ -1026,6 +1055,92 @@ def build_tile(args):
                 det.add_parts([box_at(hx - 2.0, hz, top + 0.14, top + 0.2, 0.8, 5.0, 0.0, [244, 244, 240, 255])])
                 det.add_parts([box_at(hx + 2.0, hz, top + 0.14, top + 0.2, 0.8, 5.0, 0.0, [244, 244, 240, 255])])
                 det.add_parts([box_at(hx, hz, top + 0.14, top + 0.2, 4.0, 0.8, 0.0, [244, 244, 240, 255])])
+
+    def civic_model(lm, kind):
+        """Edificios de servicio con modelo propio sobre su fachada a la calle: comisaría (franja azul y blanca, barra de luces, banderas),
+        parque de bomberos (tres puertas de garaje, franja roja, torre de mangueras) y estación (marquesina y reloj)."""
+        pt = Point(lm["x"], lm["z"]); cand = None; area_best = 0.0
+        for b_ in collid:
+            if len(b_["p"]) < 4: continue
+            try: bp = Polygon(b_["p"]).buffer(0)
+            except Exception: continue
+            if bp.is_empty or not isinstance(bp, Polygon): continue
+            if (bp.contains(pt) or bp.distance(pt) < 8) and bp.area > area_best: cand, area_best = (b_, bp), bp.area
+        if cand is None or area_best < 120: return
+        b_, bp = cand
+        ring = list(bp.exterior.coords); best = None
+        for a_, c_ in zip(ring[:-1], ring[1:]):
+            dx_, dz_ = c_[0] - a_[0], c_[1] - a_[1]; L_ = math.hypot(dx_, dz_)
+            if L_ < 6.0: continue
+            tx_, tz_ = dx_ / L_, dz_ / L_; nx_, nz_ = -tz_, tx_
+            mx_, mz_ = (a_[0] + c_[0]) / 2, (a_[1] + c_[1]) / 2
+            if bp.contains(Point(mx_ + nx_ * 0.5, mz_ + nz_ * 0.5)): nx_, nz_ = -nx_, -nz_
+            d_ = roads.distance(Point(mx_ + nx_ * 3.0, mz_ + nz_ * 3.0))
+            if best is None or d_ < best[0]: best = (d_, mx_, mz_, tx_, tz_, nx_, nz_, L_)
+        if best is None or best[0] > 25: return
+        _, mx_, mz_, tx_, tz_, nx_, nz_, L_ = best
+        if not (x0 <= mx_ < x1 and z0 <= mz_ < z1): return
+        y0 = float(hf(mx_, mz_)); ang = -math.atan2(tz_, tx_)
+        top = float(hf([c_[0] for c_ in ring], [c_[1] for c_ in ring]).max()) + b_["h"]
+        rp = bp.representative_point()
+        BLUE = [24, 64, 150, 255]; WHITE = [244, 244, 240, 255]; RED = [196, 30, 36, 255]; GREY = [96, 100, 106, 255]
+
+        def on(o, d):                                   # punto de la fachada: o a lo largo, d hacia fuera
+            return mx_ + tx_ * o + nx_ * d, mz_ + tz_ * o + nz_ * d
+
+        if kind == "police":
+            bh = min(b_["h"], 14.0) - 1.4
+            for yy, col, hh in ((y0 + bh, BLUE, 0.7), (y0 + bh + 0.7, WHITE, 0.25)):
+                cx_, cz_ = on(0, 0.09); det.add_parts([box_at(cx_, cz_, yy, yy + hh, L_ * 0.92, 0.14, ang, col)])
+            det.add_parts([box_at(rp.x, rp.y, top, top + 2.2, 0.12, 0.12, 0.0, GREY)])                                  # antena
+            det.add_parts([box_at(rp.x - 0.5, rp.y, top + 0.2, top + 0.55, 1.0, 0.4, ang, BLUE), box_at(rp.x + 0.5, rp.y, top + 0.2, top + 0.55, 1.0, 0.4, ang, WHITE)])   # barra de luces
+            for o in (-2.2, 2.2):                                                                                       # mástiles con la bandera de España
+                px_, pz_ = on(o, 1.5); yb = float(hf(px_, pz_)) + 0.12
+                det.add_parts([box_at(px_, pz_, yb, yb + 7.0, 0.08, 0.08, 0.0, GREY)])
+                for k_, (col, y1_, y2_) in enumerate(((RED, 6.9, 6.55), ([255, 196, 0, 255], 6.55, 5.95), (RED, 5.95, 5.6))):
+                    fx_, fz_ = on(o + 0.95, 1.5)
+                    det.add_parts([box_at(fx_, fz_, yb + y2_, yb + y1_, 1.8, 0.05, ang, col)])
+        elif kind == "fire":
+            dh = 3.3
+            for o in (-4.4, 0.0, 4.4):
+                cx_, cz_ = on(o, 0.1)
+                if abs(o) + 2.0 > L_ / 2: continue
+                det.add_parts([box_at(cx_, cz_, y0, y0 + dh + 0.25, 3.9, 0.12, ang, WHITE)])
+                cx2_, cz2_ = on(o, 0.18)
+                det.add_parts([box_at(cx2_, cz2_, y0, y0 + dh, 3.5, 0.1, ang, RED)])
+                cx3_, cz3_ = on(o, 0.24)
+                det.add_parts([box_at(cx3_, cz3_, y0 + 2.2, y0 + 2.7, 3.0, 0.06, ang, [40, 52, 64, 255])])             # ventanillas
+            cx_, cz_ = on(0, 0.09)
+            det.add_parts([box_at(cx_, cz_, y0 + min(b_["h"], 12.0) - 1.2, y0 + min(b_["h"], 12.0) - 0.5, L_ * 0.92, 0.14, ang, RED)])
+            det.add_parts([box_at(rp.x, rp.y, top, top + 7.5, 2.4, 2.4, 0.0, RED)])                                        # torre de mangueras
+            det.add_parts([box_at(rp.x, rp.y, top + 7.5, top + 7.9, 2.9, 2.9, 0.0, WHITE)])
+        elif kind == "train":
+            w_ = min(L_ * 0.7, 18.0)
+            cx_, cz_ = on(0, 1.7)
+            det.add_parts([box_at(cx_, cz_, y0 + 4.2, y0 + 4.5, w_, 3.4, ang, [28, 90, 168, 255])])                        # marquesina de entrada
+            for o in (-w_ / 2 + 0.3, w_ / 2 - 0.3):
+                px_, pz_ = on(o, 3.1)
+                det.add_parts([box_at(px_, pz_, float(hf(px_, pz_)) + 0.1, y0 + 4.2, 0.25, 0.25, 0.0, [200, 200, 196, 255])])
+            px_, pz_ = on(w_ / 2 + 2.5, 2.4); yb = float(hf(px_, pz_)) + 0.12
+            det.add_parts([box_at(px_, pz_, yb, yb + 8.4, 0.22, 0.22, 0.0, GREY)])                                        # reloj de la estación
+            det.add_parts([box_at(px_, pz_, yb + 7.4, yb + 9.0, 1.7, 0.3, ang, [30, 30, 34, 255])])
+            det.add_parts([box_at(px_ + nx_ * 0.02, pz_ + nz_ * 0.02, yb + 7.55, yb + 8.85, 1.4, 0.36, ang, [248, 246, 236, 255])])
+
+    # --- velero de regatas en exposición (The Ocean Race, Av. Juan Bautista Lafora): (x, z, rumbo de la proa) ---
+    for (bx_, bz_, byaw_) in G.get("DISPLAY_BOATS", [(207.0, -154.0, None)]):
+        if not (x0 <= bx_ < x1 and z0 <= bz_ < z1): continue
+        if byaw_ is None:                                                    # proa a lo largo de la calle más cercana
+            best_ = None
+            for r_ in road_lines:
+                q_ = r_["p"]
+                for i_ in range(len(q_) - 1):
+                    ax_, az_ = q_[i_]; bx2_, bz2_ = q_[i_ + 1]; dx_, dz_ = bx2_ - ax_, bz2_ - az_; l2 = dx_ * dx_ + dz_ * dz_
+                    if l2 < 1.0: continue
+                    t_ = max(0.0, min(1.0, ((bx_ - ax_) * dx_ + (bz_ - az_) * dz_) / l2)); d_ = math.hypot(bx_ - (ax_ + t_ * dx_), bz_ - (az_ + t_ * dz_))
+                    if best_ is None or d_ < best_[0]: best_ = (d_, math.atan2(dz_, dx_))
+            byaw_ = best_[1] if best_ else 0.0
+        _bp, _bo = display_sailboat(bx_, bz_, float(hf(bx_, bz_)), byaw_)
+        det.add_parts(_bp); poi_obst += _bo
 
     special = []
 
@@ -1167,8 +1282,9 @@ def build_tile(args):
             elif lm["cat"] in ("hospital", "clinic"):
                 hospital_roof(lm)
                 if lm["cat"] == "hospital": emergency_vehicles(lm, 1, 2)
-            elif lm["cat"] == "police": emergency_vehicles(lm, 0, 2)
-            elif lm["cat"] == "fire": emergency_vehicles(lm, 2, 1)
+            elif lm["cat"] == "police": emergency_vehicles(lm, 0, 2); civic_model(lm, "police")
+            elif lm["cat"] == "fire": emergency_vehicles(lm, 2, 1); civic_model(lm, "fire")
+            elif lm["cat"] == "train": civic_model(lm, "train")
         except Exception as ex_:
             print("  aviso POI", lm["id"], ex_, flush=True)
 
@@ -1354,7 +1470,7 @@ def build_tile(args):
         except OSError:
             if _try == 7: raise
             time.sleep(1.5)
-    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst + poi_obst, "parked": parked, "special": special, "roads": roads_out, "cross": crosswalks, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
+    json.dump({"tile": [tx, tz], "buildings": collid, "obstacles": tree_obst + sea_tiles + lm_obst + dk["obst"] + park_obst + wall_obst + poi_obst + fur_obst, "seats": seats, "parked": parked, "special": special, "roads": roads_out, "cross": crosswalks, "trees": trees, "lamps": lamps, "decks": dk["decks"], "streets": streets,
                "drive": {"x0": x0, "z0": z0, "cell": DC, "nx": n, "nz": n, "bits": bits}, "walk": wbits}, open(f"{OUT}/{name}.json", "w"))
     ortho = 0
     src = f"{D}ortho_t/{name}.jpg"
@@ -1573,8 +1689,13 @@ def load_landmarks():
         G["POIS"].append(q)
 
 
+def load_furniture():
+    f = D + "furniture.json"
+    G["FURN"] = json.load(open(f, encoding="utf-8")) if os.path.exists(f) else []
+
+
 def init():
-    load_dem(); load_catastro(); load_pois(); load_landmarks(); G["SEA"] = build_sea()
+    load_dem(); load_catastro(); load_pois(); load_landmarks(); load_furniture(); G["SEA"] = build_sea()
 
 
 def main():

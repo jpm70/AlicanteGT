@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 /** Bits de `flags` de cada peatón (se decodifican en el shader de vértices). */
 export const F = {
-  LONG_SLEEVE: 0, SHORTS: 1, SKIRT: 2, BACKPACK: 3, BAG: 4, CAP: 5, LONG_HAIR: 6, GLASSES: 7, CHILD: 8, PHONE: 9, JACKET: 10, BEARD: 11,
+  LONG_SLEEVE: 0, SHORTS: 1, SKIRT: 2, BACKPACK: 3, BAG: 4, CAP: 5, LONG_HAIR: 6, GLASSES: 7, CHILD: 8, PHONE: 9, JACKET: 10, BEARD: 11, SEATED: 12,
 } as const;
 
 const SHIRTS = [0xd9d9d6, 0x2f4f8a, 0xb23a3a, 0x3f7a4f, 0xe0b23c, 0x1f1f24, 0x8a5a9c, 0xe8e2d0, 0x4aa0b8, 0xc96a2a, 0x6b6f75, 0xf1c8d0, 0x2a2f3a, 0x7a8a5a];
@@ -139,11 +139,13 @@ export function patchPedMaterial(mat: THREE.MeshStandardMaterial, timeU: { value
         float sw = sin(ph) * 0.62 * aLimb * amp;
         float bob = abs(sin(ph)) * 0.022 * amp;
         bool phone = fbit(aFlags, 9.0) > 0.5 && aLimb > 0.5;
+        bool seated = fbit(aFlags, 12.0) > 0.5;                       // sentado en una terraza: piernas dobladas, brazos adelante, sin andar
+        if (seated) { sw = 0.0; bob = 0.0; phone = true; }
         if (aHead > 0.5 && fbit(aFlags, 8.0) > 0.5) transformed = vec3(0.0, 1.55, 0.0) + (transformed - vec3(0.0, 1.55, 0.0)) * 1.28;
-        if (aKind > 2.5 && aKind < 3.5) rotX(transformed, 0.5, max(0.0, -sw) * 1.25);               // rodilla: se dobla al adelantar la pierna
+        if (aKind > 2.5 && aKind < 3.5) rotX(transformed, 0.5, seated ? 1.45 : max(0.0, -sw) * 1.25);               // rodilla: se dobla al adelantar la pierna
         if (aKind > 3.5) rotX(transformed, 1.18, phone ? -1.25 : -max(0.0, -sw) * 0.8 - 0.12 * amp);   // codo
         if (aKind > 0.5 && aKind < 1.5 || aKind > 3.5) rotX(transformed, aPivot, phone ? -0.5 : sw);  // hombro
-        else if (aKind > 1.5) rotX(transformed, aPivot, sw);                                             // cadera
-        transformed.y += bob;`);
+        else if (aKind > 1.5) rotX(transformed, aPivot, seated ? -1.45 : sw);                            // cadera
+        transformed.y += bob - (seated ? 0.46 : 0.0);`);
   };
 }

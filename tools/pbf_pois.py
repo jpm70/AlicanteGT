@@ -22,6 +22,32 @@ SKIP_AMENITY = {"parking", "bench", "toilets", "bicycle_parking", "waste_basket"
 CULT = {"theatre", "cinema", "museum", "gallery", "arts_centre", "nightclub", "casino", "library"}
 
 
+# Rótulo genérico (en castellano) para locales sin nombre en OSM: el tipo de negocio, no un nombre inventado
+GENERIC = {"pharmacy": "Farmacia", "bakery": "Panadería", "pastry": "Pastelería", "confectionery": "Confitería", "hairdresser": "Peluquería", "beauty": "Estética",
+           "bar": "Bar", "cafe": "Cafetería", "restaurant": "Restaurante", "fast_food": "Comida rápida", "pub": "Pub", "ice_cream": "Heladería",
+           "bank": "Banco", "supermarket": "Supermercado", "convenience": "Tienda", "clothes": "Moda", "shoes": "Zapatería", "butcher": "Carnicería",
+           "greengrocer": "Frutería", "seafood": "Pescadería", "deli": "Charcutería", "kiosk": "Kiosco", "tobacco": "Estanco", "newsagent": "Prensa",
+           "optician": "Óptica", "dentist": "Clínica dental", "doctors": "Consulta médica", "clinic": "Clínica", "veterinary": "Veterinario",
+           "laundry": "Lavandería", "dry_cleaning": "Tintorería", "florist": "Floristería", "books": "Librería", "stationery": "Papelería",
+           "jewelry": "Joyería", "mobile_phone": "Telefonía", "estate_agent": "Inmobiliaria", "travel_agency": "Agencia de viajes", "car_repair": "Taller",
+           "hotel": "Hotel", "hostel": "Hostal", "guest_house": "Pensión", "hardware": "Ferretería", "furniture": "Muebles", "electronics": "Electrónica",
+           "gift": "Regalos", "toys": "Juguetería", "bicycle": "Bicicletas", "pet": "Mascotas", "copyshop": "Copistería", "photo": "Fotografía",
+           "school": "Colegio", "kindergarten": "Escuela infantil", "language_school": "Idiomas", "driving_school": "Autoescuela", "music_school": "Música",
+           "fitness_centre": "Gimnasio", "sports_centre": "Centro deportivo", "nightclub": "Discoteca", "cinema": "Cine", "theatre": "Teatro",
+           "library": "Biblioteca", "museum": "Museo", "gallery": "Galería de arte", "wine": "Bodega", "beverages": "Bebidas", "coffee": "Café", "variety_store": "Bazar",
+           "department_store": "Grandes almacenes", "mall": "Centro comercial", "bag": "Bolsos", "tailor": "Sastrería", "perfumery": "Perfumería", "cosmetics": "Cosmética",
+           "locksmith": "Cerrajería", "computer": "Informática", "post_office": "Correos", "insurance": "Seguros", "car_rental": "Alquiler de coches"}
+
+
+def label_of(tags, sub):
+    """Nombre del rótulo: el del local; si no tiene, la marca o el operador; si tampoco, el tipo de negocio."""
+    for k in ("name", "brand", "operator"):
+        v = tags.get(k)
+        if v and len(v) <= 46: return v, False
+    g = GENERIC.get(sub)
+    return (g, True) if g else (None, False)
+
+
 def cat_of(tags):
     for k in ("amenity", "shop", "tourism", "office", "craft", "leisure", "healthcare"):
         v = tags.get(k)
@@ -49,11 +75,13 @@ class H(osmium.SimpleHandler):
 
     def add(self, lat, lon, tags):
         if not (lat_s - 0.002 <= lat <= lat_n + 0.002 and lng_w - 0.002 <= lon <= lng_e + 0.002): return
-        name = tags.get("name")
-        if not name or len(name) > 40: return
         cat, sub = cat_of(tags)
         if cat is None: return
-        self.out.append({"x": round((lon - LNG0) * KLNG, 1), "z": round(-(lat - LAT0) * KLAT, 1), "name": name, "cat": cat, "sub": sub})
+        name, generic = label_of(tags, sub)
+        if not name: return
+        e = {"x": round((lon - LNG0) * KLNG, 1), "z": round(-(lat - LAT0) * KLAT, 1), "name": name, "cat": cat, "sub": sub}
+        if generic: e["gen"] = 1
+        self.out.append(e)
 
     def node(self, n):
         if "name" in n.tags: self.add(n.location.lat, n.location.lon, {t.k: t.v for t in n.tags})
@@ -64,10 +92,10 @@ fp = osmium.FileProcessor(PBF).with_locations().with_filter(osmium.filter.KeyFil
 for o in fp:
     if o.is_node():
         t = {x.k: x.v for x in o.tags}
-        if "name" in t: h.add(o.location.lat, o.location.lon, t)
+        h.add(o.location.lat, o.location.lon, t)
     elif o.is_way():
         t = {x.k: x.v for x in o.tags}
-        if "name" in t and "building" not in t or ("name" in t and t.get("shop")):
+        if "building" not in t or t.get("shop") or t.get("amenity"):
             try:
                 pts = [(n.lat, n.lon) for n in o.nodes if n.location.valid()]
             except Exception:
