@@ -562,8 +562,12 @@ export class Traffic {
         if (d < min && d > 1e-4) {
           const push = (min - d) * 0.6;
           cx += (dx / d) * push; cz += (dz / d) * push;
-          impact = Math.max(impact, Math.min(1, Math.abs(state.speedMps - a.v) / 18));
-          a.v *= 0.4; a.hold = Math.max(a.hold, 0.8);
+          // solo es un golpe si el jugador avanza hacia ese coche; si se aleja (marcha atrás, o el otro se va), solo se le separa
+          const toward = state.speedMps * (pfx * (-dx / d) + pfz * (-dz / d));
+          if (toward > 0.3) {
+            impact = Math.max(impact, Math.min(1, Math.abs(state.speedMps - a.v) / 18));
+            a.v *= 0.4; a.hold = Math.max(a.hold, 0.8);
+          }
         }
       }
     }
