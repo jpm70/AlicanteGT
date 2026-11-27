@@ -950,6 +950,41 @@ export class WorldScene {
     this.camSnap = true;
   }
 
+  /** True mientras se cargan teselas (la salida espera a que el mundo esté dibujado). */
+  isStreaming(): boolean { return this.loading.size > 0; }
+
+  private beacon: THREE.Group | null = null;
+  private beaconClock = 0;
+
+  /** Baliza de la meta: columna de luz con anillo en el suelo (null = sin meta). */
+  setDestination(pt: { x: number; z: number } | null) {
+    if (this.beacon) {
+      this.scene.remove(this.beacon);
+      this.beacon.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.geometry.dispose(); (m.material as THREE.Material).dispose(); } });
+      this.beacon = null;
+    }
+    if (!pt) return;
+    const g = new THREE.Group();
+    const mat = (o: number) => new THREE.MeshBasicMaterial({ color: 0xffc233, transparent: true, opacity: o, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false });
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 220, 24, 1, true), mat(0.34));
+    col.position.y = 110; g.add(col);
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 220, 10, 1, true), mat(0.7));
+    core.position.y = 110; g.add(core);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(6.5, 8, 40), mat(0.6));
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.25; ring.name = 'ring'; g.add(ring);
+    g.position.set(pt.x, heightAt(pt.x, pt.z), pt.z);
+    g.renderOrder = 10;
+    this.scene.add(g);
+    this.beacon = g;
+  }
+
+  private tickBeacon(dt: number) {
+    if (!this.beacon) return;
+    this.beaconClock += dt;
+    const ring = this.beacon.getObjectByName('ring');
+    if (ring) { const k = 1 + 0.12 * Math.sin(this.beaconClock * 3); ring.scale.set(k, k, k); }
+  }
+
   private resize() {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
@@ -970,6 +1005,7 @@ export class WorldScene {
     if (this.manifest) this.streamTiles(p.x, p.z);
     if (this.prof) this.mark('stream', t_stream);
     this.rig.updateFromState(state, dt);
+    this.tickBeacon(dt);
     if (this.camSnap) this.carY = heightAt(p.x, p.z);
     const gy = this.groundY(p.x, p.z, this.carY, this.camSnap);
     this.carY = gy;
@@ -1069,6 +1105,7 @@ export class WorldScene {
   }
 
   dispose() {
+    this.setDestination(null);
     this.ro.disconnect();
     this.rig.dispose();
     this.envTarget?.dispose();
