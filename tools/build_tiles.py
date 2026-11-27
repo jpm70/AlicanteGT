@@ -920,6 +920,15 @@ def build_tile(args):
         trees += street_trees(road_lines, walk_t, trees, bshapes, bidx, x0, z0, x1, z1)
         lamps += street_lamps(road_lines, walk_t, trees, bshapes, bidx, lamps, x0, z0, x1, z1)
         parked, park_obst = parked_cars(road_lines, roads_t, bshapes, bidx, x0, z0, x1, z1)
+    # nada sobre la huella de un túnel (árboles, farolas, coches aparcados y sus colisionadores): si no, salen palmeras dentro de la trinchera y el coche choca con troncos invisibles
+    _tz = dk.get("tunnel_zone")
+    if _tz is not None and not _tz.is_empty:
+        shapely.prepare(_tz)
+        trees = [t_ for t_ in trees if not _tz.contains(Point(t_[0], t_[1]))]
+        lamps = [l_ for l_ in lamps if not _tz.contains(Point(l_[0], l_[1]))]
+        _keep = [i_ for i_, p_ in enumerate(parked) if not _tz.contains(Point(p_[0], p_[1]))]
+        parked = [parked[i_] for i_ in _keep]
+        park_obst = [o_ for o_ in park_obst if not _tz.contains(Point(sum(q_[0] for q_ in o_["p"]) / len(o_["p"]), sum(q_[1] for q_ in o_["p"]) / len(o_["p"])))]
     DRIVE_K = ("primary", "secondary", "tertiary", "residential", "unclassified", "living_street", "trunk", "primary_link", "secondary_link", "tertiary_link")
     roads_out = [[r["id"], r["k"], (0 if not r["ow"] else 2 if r["rv"] else 1), round(r["w"], 1), [[round(x_, 1), round(z_, 1)] for x_, z_ in r["p"]]]
                  for r in road_lines if r["k"] in DRIVE_K and len(r["p"]) >= 2]
