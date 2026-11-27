@@ -17,6 +17,8 @@ interface Agent {
   plan?: { way: Way; atStart: boolean }; sig: -1 | 0 | 1; braking: boolean;
   /** posición y rumbo dibujados (suavizados): en los cruces el coche describe una curva en vez de saltar de una vía a otra */
   rx: number; rz: number; ry: number; rinit: boolean;
+  /** orden de prioridad en los cruces: el de menor número pasa primero (así nunca se bloquean dos coches entre sí) */
+  uid: number;
 }
 
 /** Colores de carrocería: mucho blanco, gris, plata y negro, como en la calle. */
@@ -51,6 +53,7 @@ export class Traffic {
   private dirty = true;
   private agents: Agent[] = [];
   private parked = new Map<string, CarSet[]>();
+  private nextUid = 1;
   private parkedTiles = new Map<string, ParkedTile>();
   private pool = new Map<VariantId, CarSet>();
   private poolDirty = true;
@@ -286,7 +289,7 @@ export class Traffic {
       if (this.agents.filter((q) => q.variant === variant).length >= CAP[variant]) continue;
       const a: Agent = {
         way: w, dir, s: 4 + this.rnd() * (w.len - 8), v: 0, vmax: (SPEED[w.cls] ?? 7) * (0.8 + this.rnd() * 0.3) * (variant === 'bus' ? 0.85 : 1), lane: this.laneFor(w),
-        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0, sig: 0, braking: false, rx: 0, rz: 0, ry: 0, rinit: false,
+        x: 0, z: 0, fx: 0, fz: 1, col: Math.floor(this.rnd() * PAINT.length), variant, len: VARIANT_LEN[variant], hold: 0, sig: 0, braking: false, rx: 0, rz: 0, ry: 0, rinit: false, uid: this.nextUid++,
       };
       this.place(a);
       const dx = a.x - px, dz = a.z - pz, d = Math.hypot(dx, dz);
@@ -363,7 +366,9 @@ export class Traffic {
         if (along <= 0 || along > reach + o.len * 0.5) continue;
         const lat = Math.abs(rx * -a.fz + rz * a.fx);
         const gap = (a.len + o.len) / 2 + 1.0;
-        if (lat < 1.15 && o.fx * a.fx + o.fz * a.fz > 0.3) target = Math.min(target, along < gap ? 0 : Math.max(0, o.v + (along - gap) * 0.7));
+        const dot = o.fx * a.fx + o.fz * a.fz;
+        if (lat < 1.15 && dot > 0.3) target = Math.min(target, along < gap ? 0 : Math.max(0, o.v + (along - gap) * 0.7));
+        else if (lat < 2.0 && dot <= 0.3 && dot > -0.7 && o.uid < a.uid) target = Math.min(target, along < gap ? 0 : Math.max(0, (along - gap) * 0.6));   // cruce: cede el paso a quien le atraviesa
       }
       {
         const rx = px - a.x, rz = pz - a.z, along = rx * a.fx + rz * a.fz;

@@ -5,13 +5,13 @@ const METERS_PER_DEG_LAT = 111320;
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
 
-/** Max speeds in meters/sec (58 m/s ≈ 209 km/h) */
-const MAX_FORWARD_MPS = 58.0;
-const MAX_REVERSE_MPS = -14.0;
+/** Velocidad máxima en m/s (33,5 m/s ≈ 120 km/h: ritmo realista para recorrer una ciudad) */
+const MAX_FORWARD_MPS = 33.5;
+const MAX_REVERSE_MPS = -8.0;
 const WHEEL_RADIUS_M = 0.36;
 
 // Gear upper speed thresholds in km/h
-const GEAR_THRESHOLDS_KMH = [42, 76, 114, 152, 186, 220];
+const GEAR_THRESHOLDS_KMH = [24, 42, 62, 82, 102, 122];
 
 function damp(current: number, target: number, lambda: number, dt: number): number {
   return current + (target - current) * (1 - Math.exp(-lambda * dt));
@@ -69,17 +69,17 @@ export function stepCarPhysics(
     } else {
       // Torque curve: punchy off the line, smooth taper near top speed
       const speedRatio = Math.min(absSpeed / MAX_FORWARD_MPS, 1);
-      accel = 11.5 * (1 - 0.58 * speedRatio * speedRatio);
+      accel = 6.2 * (1 - 0.6 * speedRatio * speedRatio);
     }
   } else if (input.brake) {
     if (state.speedMps > 0.6) {
       // Strong carbon-ceramic brakes
-      accel = -31.0;
+      accel = -22.0;
       brakingNow = true;
     } else {
       // Smooth reverse gear
       const revRatio = Math.min(Math.abs(state.speedMps) / Math.abs(MAX_REVERSE_MPS), 1);
-      accel = -9.5 * (1 - 0.5 * revRatio);
+      accel = -5.0 * (1 - 0.5 * revRatio);
     }
   }
 
