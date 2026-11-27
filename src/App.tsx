@@ -227,7 +227,7 @@ export default function App() {
         setPlacesOpen((o) => !o);                          // L: lista de lugares
       } else if (code === 'KeyT' && !e.repeat) {
         const w = worldRef.current;                       // T: tráfico y peatones sí/no
-        if (w) { const on = !w.traffic.enabled; w.traffic.enabled = on; w.peds.enabled = on; }
+        if (w) { const on = !w.traffic.enabled; w.traffic.enabled = on; w.peds.enabled = on; w.cyclists.enabled = on; }
       } else if (code === 'Digit1' && !e.repeat) {
         applyAtmosphereMode('sunset');
       } else if (code === 'Digit2' && !e.repeat) {

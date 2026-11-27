@@ -89,6 +89,8 @@ export class Traffic {
 
   setSignals(s: Signals) { this.signals = s; }
 
+  hasWay(id: number): boolean { return this.ways.has(id); }
+
   /** ¿Hay algún coche en marcha a menos de r metros de (x, z)? */
   carWithin(x: number, z: number, r: number): boolean {
     return this.agents.some((a) => Math.hypot(a.x - x, a.z - z) < r);
