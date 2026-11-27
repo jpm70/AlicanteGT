@@ -14,7 +14,7 @@ import { createSportsCar, type SportsCarRig } from '../scene/createSportsCar';
 import { CollisionWorld, type BuildingCollider, type DriveMask } from './collision';
 import { heightAt, setDem, TILE, toLocal, type DemData } from './geo';
 import { createPalmAssets, type PalmAssets } from './palms';
-import { Traffic, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
+import { Traffic, type BusRoute, type ParkedRec, type RoadRec, type SpecialRec } from './traffic';
 import { Pedestrians } from './pedestrians';
 import { Cyclists } from './cyclists';
 import { Signals } from './signals';
@@ -327,6 +327,7 @@ export class WorldScene {
       fetch(`${base}world/dem.json`).then((r) => r.json() as Promise<DemData>),
     ]);
     this.manifest = manifest;
+    fetch(`${base}world/bus_routes.json`).then((r) => r.json()).then((d: { routes: BusRoute[] }) => this.traffic.setBusRoutes(d.routes)).catch(() => undefined);
     for (const t of manifest.tiles) this.infos.set(`${t.tx}_${t.tz}`, t);
     setDem(dem);
     this.collision = new CollisionWorld();
