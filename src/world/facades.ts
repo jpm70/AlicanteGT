@@ -177,7 +177,66 @@ function drawCell(style: number, ground: boolean, c: Ctx, m: Ctx, ox: number, oy
   m.restore();
 }
 
-export function createFacadeAtlas(): { map: THREE.CanvasTexture; mask: THREE.CanvasTexture } {
+/** Elementos en relieve de cada celda (x, y, ancho, alto, altura 0..255; 128 = plano): balcones, cornisas, antepechos, zócalos, contraventanas. */
+const RAISED: Record<string, [number, number, number, number, number][]> = {
+  '0u': [[62, 20, 132, 12, 190], [56, 208, 144, 18, 235], [0, 244, 256, 12, 215], [66, 206, 124, 4, 160]],
+  '0g': [[0, 226, 256, 30, 195], [24, 26, 208, 34, 205], [34, 54, 188, 10, 180]],
+  '1u': [[0, 214, 256, 42, 200], [0, 0, 256, 22, 190], [8, 186, 240, 34, 175]],
+  '1g': [[0, 12, 256, 26, 205], [8, 38, 240, 6, 185]],
+  '2u': [[72, 62, 24, 116, 190], [160, 62, 24, 116, 190], [88, 170, 80, 8, 230], [88, 58, 80, 6, 200]],
+  '2g': [[0, 232, 256, 24, 195], [78, 100, 100, 10, 200]],
+  '3u': [[0, 160, 256, 68, 215], [40, 30, 176, 10, 190], [40, 154, 176, 6, 195]],
+  '3g': [[0, 232, 256, 24, 195], [22, 62, 212, 10, 195]],
+};
+
+/** Mapa de alturas (blanco = sobresale, negro = hundido): ventanas rehundidas, marcos y molduras en relieve. Se usa para inclinar la normal en el shader. */
+function buildHeightMap(mc: HTMLCanvasElement): THREE.CanvasTexture {
+  const W = mc.width, H = mc.height;
+  const src = mc.getContext('2d')!.getImageData(0, 0, W, H).data;
+  const glassMask = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) glassMask[i] = src[i * 4] > 128 ? 1 : 0;
+  const dil = (inp: Uint8Array, r: number) => {                       // dilatación separable (máximo en ventana)
+    const tmp = new Uint8Array(W * H), out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let v = 0; for (let k = -r; k <= r && !v; k++) { const xx = x + k; if (xx >= 0 && xx < W && inp[y * W + xx]) v = 1; }
+      tmp[y * W + x] = v;
+    }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let v = 0; for (let k = -r; k <= r && !v; k++) { const yy = y + k; if (yy >= 0 && yy < H && tmp[yy * W + x]) v = 1; }
+      out[y * W + x] = v;
+    }
+    return out;
+  };
+  const frame = dil(glassMask, 7);
+  const hc = document.createElement('canvas');
+  hc.width = W; hc.height = H;
+  const c = hc.getContext('2d')!;
+  const img = c.createImageData(W, H);
+  for (let i = 0; i < W * H; i++) {
+    const v = glassMask[i] ? 18 : frame[i] ? 196 : 128;                // ventana hundida · marco que sobresale · muro
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+  }
+  c.putImageData(img, 0, 0);
+  for (let s = 0; s < FACADE_STYLES; s++) {
+    for (const [row, tag] of [[0, 'u'], [1, 'g']] as [number, string][]) {
+      for (const [x, y, w, h, v] of RAISED[`${s}${tag}`] ?? []) { c.fillStyle = `rgb(${v},${v},${v})`; c.fillRect(s * CELL + x, row * CELL + y, w, h); }
+    }
+  }
+  const soft = document.createElement('canvas');                       // suavizado: bordes con pendiente, no escalones
+  soft.width = W; soft.height = H;
+  const sc = soft.getContext('2d')!;
+  sc.filter = 'blur(1.4px)';
+  sc.drawImage(hc, 0, 0);
+  const t = new THREE.CanvasTexture(soft);
+  t.colorSpace = THREE.NoColorSpace;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.anisotropy = 4;
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  return t;
+}
+
+export function createFacadeAtlas(): { map: THREE.CanvasTexture; mask: THREE.CanvasTexture; height: THREE.CanvasTexture } {
   const W = CELL * FACADE_STYLES, H = CELL * 2;
   const cc = document.createElement('canvas');
   cc.width = W; cc.height = H;
@@ -198,7 +257,7 @@ export function createFacadeAtlas(): { map: THREE.CanvasTexture; mask: THREE.Can
     t.minFilter = THREE.LinearMipmapLinearFilter;
     return t;
   };
-  return { map: mk(cc, true), mask: mk(mc, false) };
+  return { map: mk(cc, true), mask: mk(mc, false), height: buildHeightMap(mc) };
 }
 
 /** Mosaico ondulado de la Explanada (rojo, negro y crema). UV: u = a lo largo del paseo, v = a lo ancho (9 m por tile). */

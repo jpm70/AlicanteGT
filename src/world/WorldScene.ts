@@ -145,7 +145,7 @@ export class WorldScene {
   private bloom: UnrealBloomPass | null = null;
   private gtao: GTAOPass | null = null;
   private grade: ShaderPass | null = null;
-  private wallUniforms = { uMask: { value: null as THREE.Texture | null }, uNight: { value: 0 } };
+  private wallUniforms = { uMask: { value: null as THREE.Texture | null }, uHeight: { value: null as THREE.Texture | null }, uNight: { value: 0 }, uRelief: { value: 2.2 } };
 
   constructor(
     private container: HTMLElement,
@@ -620,18 +620,30 @@ export class WorldScene {
 
   /** Material de muros: atlas de fachadas (estilo en u/1000, plantas en v) + ventanas iluminadas de noche. */
   private makeWallMaterial(): THREE.MeshStandardMaterial {
-    const { map, mask } = createFacadeAtlas();
+    const { map, mask, height } = createFacadeAtlas();
     this.wallUniforms.uMask.value = mask;
+    this.wallUniforms.uHeight.value = height;
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, map, roughness: 0.88, metalness: 0 });
     const u = this.wallUniforms;
     mat.onBeforeCompile = (sh) => {
       sh.uniforms.uMask = u.uMask;
+      sh.uniforms.uHeight = u.uHeight;
+      sh.uniforms.uRelief = u.uRelief;
       sh.uniforms.uNight = u.uNight;
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
           uniform sampler2D uMask;
+          uniform sampler2D uHeight;
+          uniform float uRelief;
           uniform float uNight;
-          float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
+          float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          vec3 reliefNormal(vec3 pos, vec3 n, vec2 dH, float fd) {
+            vec3 sx = normalize(dFdx(pos)), sy = normalize(dFdy(pos));
+            vec3 r1 = cross(sy, n), r2 = cross(n, sx);
+            float det = dot(sx, r1) * fd;
+            vec3 grad = sign(det) * (dH.x * r1 + dH.y * r2);
+            return normalize(abs(det) * n - grad);
+          }`)
         .replace('#include <map_fragment>', `
           float stl = floor(vMapUv.x / 1000.0 + 0.0001);
           vec2 cuv = vec2(vMapUv.x - stl * 1000.0, vMapUv.y);
@@ -644,9 +656,18 @@ export class WorldScene {
           vec4 fac = textureGrad(map, auv, gx, gy);
           float win = textureGrad(uMask, auv, gx, gy).r;
           diffuseColor *= vec4(fac.rgb, 1.0);
+          float hC = textureGrad(uHeight, auv, gx, gy).r;
+          float hX = textureGrad(uHeight, auv + gx, gx, gy).r;
+          float hY = textureGrad(uHeight, auv + gy, gx, gy).r;
+          vec2 dRelief = vec2(hX - hC, hY - hC) * uRelief;
+          float recess = 1.0 - smoothstep(0.05, 0.35, hC);                              // dentro del hueco de la ventana: más oscuro
+          float ledge = smoothstep(0.62, 0.9, hC);                                      // molduras y balcones: algo más claros
+          diffuseColor.rgb *= (1.0 - 0.18 * recess) * (1.0 + 0.07 * ledge);
           float lit = step(0.55, h21(floor(cuv) + vec2(stl * 7.0, 3.0)));
           totalEmissiveRadiance += win * lit * uNight * vec3(1.0, 0.74, 0.4) * 0.8;
-        `);
+        `)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+          normal = reliefNormal(-vViewPosition, normal, dRelief, faceDirection);`);
     };
     return mat;
   }
@@ -710,6 +731,52 @@ export class WorldScene {
   }
 
   /** Árboles y palmeras instanciados (posiciones reales de OSM + arbolado de calle). */
+  private leafMat: THREE.MeshStandardMaterial | null = null;
+  private leafGeo: THREE.BufferGeometry | null = null;
+
+  /** Copa abultada (icosaedro con los vértices desplazados), para que no parezca una bola lisa. */
+  private leafCrownGeometry(): THREE.BufferGeometry {
+    if (this.leafGeo) return this.leafGeo;
+    const g = new THREE.IcosahedronGeometry(1.9, 1);
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      const n = Math.sin(x * 7.3 + z * 3.1) * Math.cos(y * 5.7 - x * 2.3) + Math.sin(z * 6.1 + y * 4.3);
+      const k = 1 + 0.14 * n;
+      p.setXYZ(i, x * k, y * (k * 0.97 + 0.03), z * k);
+    }
+    g.computeVertexNormals();
+    this.leafGeo = g;
+    return g;
+  }
+
+  /** Follaje: la copa se «recorta» en hojas (celdas 3D de ~30 cm con forma alargada y tono propio); con más huecos hacia el borde, para un contorno desflecado. */
+  private leafMaterial(): THREE.MeshStandardMaterial {
+    if (this.leafMat) return this.leafMat;
+    const mat = new THREE.MeshStandardMaterial({ color: 0x57963f, roughness: 0.92, side: THREE.DoubleSide });
+    mat.customProgramCacheKey = () => 'leafy-crown';
+    mat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vObjP;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObjP = position;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying vec3 vObjP;
+          float h31(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }`)
+        .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+          float ndv = abs(dot(normal, normalize(vViewPosition)));
+          vec3 lq = vObjP * 3.3; vec3 lc = floor(lq); vec3 lf = fract(lq) - 0.5;
+          float lh = h31(lc); float la = lh * 6.2831;
+          vec2 ld = vec2(lf.x * cos(la) - lf.z * sin(la), lf.x * sin(la) + lf.z * cos(la));
+          float leaf = length(vec2(ld.x, (ld.y + lf.y * 0.5) * 2.1));
+          if (leaf > 0.38 + 0.5 * ndv + (lh - 0.5) * 0.18 || lh > 0.955) discard;
+          diffuseColor.rgb *= 0.58 + 0.78 * lh;
+          diffuseColor.rgb *= mix(0.55, 1.1, smoothstep(-1.9, 1.9, vObjP.y));`);
+    };
+    this.leafMat = mat;
+    return mat;
+  }
+
   private addTrees(lt: LoadedTile, trees: [number, number, number][]) {
     const palms = trees.filter((t) => t[2] === 1);
     const broad = trees.filter((t) => t[2] === 0);
@@ -726,10 +793,10 @@ export class WorldScene {
     };
     // árboles de hoja ancha: tronco + copa
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f35, roughness: 0.95 });
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.9 });
-    lt.materials.push(trunkMat, leafMat);
+    const leafMat = this.leafMaterial();
+    lt.materials.push(trunkMat);
     const bt = mk(new THREE.CylinderGeometry(0.12, 0.2, 2.6, 6), trunkMat, broad.length, true);
-    const bc = mk(new THREE.IcosahedronGeometry(1.9, 1), leafMat, broad.length, true);
+    const bc = mk(this.leafCrownGeometry(), leafMat, broad.length, true);
     broad.forEach(([x, z], i) => {
       const sc = 0.8 + ((i * 37) % 10) / 25;
       const y = heightAt(x, z);
