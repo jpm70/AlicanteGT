@@ -130,6 +130,28 @@ def horse_at(hx, hz, y, yaw, sc, body, dark):
     return parts
 
 
+def pagoda_kiosk(cx, cz, g, sc=1.0):
+    """Quiosco de música de la Explanada: planta octogonal sobre un estrado, ocho columnas finas, balaustrada, tejado de pagoda en dos cuerpos (verde grisáceo) y remate."""
+    stone = hexrgb(0xd9d3c3); cream = hexrgb(0xece4d2); roof = hexrgb(0x93ad9f); roof2 = hexrgb(0x7f998b); gold = hexrgb(0xd9b45a)
+    P = [cyl_at(cx, cz, g - 0.3, g + 0.45 * sc, 3.5 * sc, stone, 8), cyl_at(cx, cz, g + 0.45 * sc, g + 0.7 * sc, 3.1 * sc, cream, 8)]
+    for k in range(8):
+        a = k * math.pi / 4 + math.pi / 8
+        px, pz = cx + math.cos(a) * 2.75 * sc, cz + math.sin(a) * 2.75 * sc
+        P.append(cyl_at(px, pz, g + 0.7 * sc, g + 3.0 * sc, 0.1 * sc, cream, 8))                 # columna
+        P.append(box_at(px, pz, g + 0.7 * sc, g + 1.2 * sc, 0.4 * sc, 0.4 * sc, -a, stone))      # basa de balaustrada
+    P.append(cyl_at(cx, cz, g + 3.0 * sc, g + 3.3 * sc, 3.2 * sc, cream, 8))                     # arquitrabe
+    def cone(r, h, y, col):
+        m = trimesh.creation.cone(radius=r, height=h, sections=8)
+        m.apply_transform(trimesh.transformations.rotation_matrix(-math.pi / 2, [1, 0, 0])); m.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 8, [0, 1, 0]))
+        m.apply_translation([cx, y, cz]); V = np.asarray(m.vertices); return V, np.asarray(m.faces), _vc(V, col)
+    P.append(cone(4.1 * sc, 1.5 * sc, g + 3.3 * sc, roof))                                       # tejado inferior (alero amplio)
+    P.append(cyl_at(cx, cz, g + 4.4 * sc, g + 4.9 * sc, 1.6 * sc, cream, 8))                     # tambor
+    P.append(cone(2.4 * sc, 1.6 * sc, g + 4.9 * sc, roof2))                                      # tejado superior
+    P.append(cyl_at(cx, cz, g + 6.5 * sc, g + 7.3 * sc, 0.06 * sc, gold, 6))                     # remate
+    P.append(dome_at(cx, cz, g + 6.4 * sc, 0.22 * sc, 0.22 * sc, gold))
+    return P
+
+
 def luceros_at(cx, cz, g, R):
     """Fuente de la Plaza de los Luceros (Daniel Bañuls, 1930s): pila circular de arenisca con borde festoneado, cuerpo central escalonado,
     cuatro grupos de caballos y una torre estrecha y escalonada con figura en relieve y remate en punta (referencia: fotos aportadas por el usuario)."""

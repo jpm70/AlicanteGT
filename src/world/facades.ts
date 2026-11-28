@@ -266,7 +266,7 @@ export function createMosaicTexture(): THREE.CanvasTexture {
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   const c = cv.getContext('2d')!;
-  const cols = ['#ece4d2', '#c58a7e', '#2b2b2f', '#ece4d2', '#c58a7e', '#2b2b2f'];   // crema, rosa salmón y negro, como la Explanada real
+  const cols = ['#efe7d3', '#26396a', '#b0604a', '#efe7d3', '#26396a', '#b0604a'];   // crema, azul marino y terracota, como la Explanada real (fotos de referencia)
   const bands = cols.length, bh = H / bands;
   c.fillStyle = cols[0];
   c.fillRect(0, 0, W, H);

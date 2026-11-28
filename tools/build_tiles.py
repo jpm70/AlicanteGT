@@ -377,6 +377,24 @@ def explanada_palms(mosaic_geoms, x0, z0, x1, z1, total=365):
     return out, lamps_out
 
 
+def explanada_kiosks(mosaic_geoms, x0, z0, x1, z1):
+    """Dos quioscos de música con tejado de pagoda a un lado del paseo (a ~30 % y ~70 % del largo). Devuelve [(x, z)] de los que caen en la tesela."""
+    if not mosaic_geoms: return []
+    big = max(polys_of(unary_union(mosaic_geoms)), key=lambda g: g.area)
+    rect = big.minimum_rotated_rectangle; rc = list(rect.exterior.coords)[:4]
+    e1 = (rc[1][0] - rc[0][0], rc[1][1] - rc[0][1]); e2 = (rc[2][0] - rc[1][0], rc[2][1] - rc[1][1])
+    ax = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2; Lx = math.hypot(*ax); ux, uz = ax[0] / Lx, ax[1] / Lx
+    W = (math.hypot(*e2) if ax is e1 else math.hypot(*e1)); vx, vz = -uz, ux; c = rect.centroid
+    out = []
+    for t in (-0.2, 0.2):
+        for off in (W / 2 - 6.0,):
+            px, pz = c.x + ux * Lx * t + vx * off, c.y + uz * Lx * t + vz * off
+            if not big.buffer(-2.5).contains(Point(px, pz)):
+                px, pz = c.x + ux * Lx * t - vx * off, c.y + uz * Lx * t - vz * off
+            if big.buffer(-2.5).contains(Point(px, pz)) and x0 <= px < x1 and z0 <= pz < z1: out.append((px, pz))
+    return out
+
+
 LM_PIRAMIDE = 266286896      # Edificio La Pirámide (Av. de Dénia): torre escalonada en forma de pirámide
 PARK_DEFAULT = ("tertiary", "residential", "unclassified", "living_street")
 PARK_YES = {"parallel", "diagonal", "perpendicular", "lane", "street_side", "marked", "on_street", "yes", "half_on_kerb", "on_kerb", "painted_area_only"}
@@ -934,6 +952,9 @@ def build_tile(args):
     # --- arbolado de calle y obstáculos de árboles ---
     _pl, _lp = explanada_palms(mosaic_geoms, x0, z0, x1, z1)
     trees += _pl; lamps += _lp
+    for (kx, kz) in explanada_kiosks(mosaic_geoms, x0, z0, x1, z1):
+        lm_parts += pagoda_kiosk(kx, kz, float(hf(kx, kz)))
+        lm_obst.append({"id": -5, "h": 3, "p": [[round(kx + 3.6 * math.cos(a_ * math.pi / 8), 2), round(kz + 3.6 * math.sin(a_ * math.pi / 8), 2)] for a_ in range(17)]})
     bshapes = [Polygon(b["p"]).buffer(0) for b in collid if len(b["p"]) >= 4]
     bidx = STRtree(bshapes) if bshapes else None
     if bidx is not None:
