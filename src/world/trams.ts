@@ -25,15 +25,28 @@ function colorize(g: THREE.BufferGeometry, hex: number): THREE.BufferGeometry {
 function buildCarGeometry(): THREE.BufferGeometry {
   const P: THREE.BufferGeometry[] = [];
   const box = (w: number, h: number, l: number, x: number, y: number, z: number, hex: number) => P.push(colorize(new THREE.BoxGeometry(w, h, l).translate(x, y, z), hex));
-  box(2.65, 0.55, CAR_LEN, 0, 0.62, 0, 0x1f4e9a);                    // faldón azul
-  box(2.65, 1.75, CAR_LEN, 0, 1.77, 0, 0xf1f2f0);                    // caja blanca
-  box(2.69, 0.78, CAR_LEN - 0.9, 0, 2.05, 0, 0x1b2a3a);              // ventanillas
-  box(2.4, 0.3, CAR_LEN - 0.4, 0, 2.77, 0, 0xc9ccd0);                // techo
-  box(2.68, 0.12, CAR_LEN, 0, 1.2, 0, 0x2fa05a);                     // línea verde
-  for (const s of [1, -1]) {
-    box(2.1, 0.95, 0.05, 0, 2.0, s * (CAR_LEN / 2 + 0.01), 0x1b2a3a);  // parabrisas / testero
-    box(2.5, 0.35, 0.08, 0, 0.6, s * (CAR_LEN / 2 + 0.01), 0x33383c);
+  // librea del TRAM de Alicante (FGV): caja blanca, faldón naranja que sube en cuña hacia los testeros, franja grafito con las ventanillas y testeros ahumados
+  box(2.65, 0.62, CAR_LEN, 0, 0.68, 0, 0xf0721c);                    // faldón naranja
+  box(2.65, 1.75, CAR_LEN, 0, 1.82, 0, 0xf1f2f0);                    // caja blanca
+  box(2.69, 0.8, CAR_LEN - 0.9, 0, 2.1, 0, 0x2b2e33);                // franja grafito de ventanillas
+  box(2.4, 0.3, CAR_LEN - 0.4, 0, 2.8, 0, 0xdadcdf);                 // techo
+  for (let d = -1; d <= 1; d++) {                                    // dobles puertas acristaladas con marco blanco
+    box(2.7, 1.55, 1.5, 0, 1.78, d * 3.7, 0xf1f2f0);
+    box(2.72, 1.38, 1.28, 0, 1.8, d * 3.7, 0x2b2e33);
   }
+  for (const s of [1, -1]) {
+    box(2.5, 1.5, 0.12, 0, 2.0, s * (CAR_LEN / 2 + 0.03), 0x2b2e33);   // testero grafito con parabrisas
+    box(2.2, 0.55, 0.12, 0, 1.0, s * (CAR_LEN / 2 + 0.05), 0xf0721c);  // cuña naranja del morro
+    box(2.5, 0.32, 0.14, 0, 0.4, s * (CAR_LEN / 2 + 0.05), 0x33383c);
+    box(0.3, 0.14, 0.05, 0.85, 0.72, s * (CAR_LEN / 2 + 0.12), 0xfff4d0);   // faros
+    box(0.3, 0.14, 0.05, -0.85, 0.72, s * (CAR_LEN / 2 + 0.12), 0xfff4d0);
+    box(0.18, 0.5, 0.9, 1.34, 0.62, s * (CAR_LEN / 2 - 1.1), 0x33383c);     // bogie visible bajo el faldón
+    box(0.18, 0.5, 0.9, -1.34, 0.62, s * (CAR_LEN / 2 - 1.1), 0x33383c);
+  }
+  box(0.04, 0.4, 1.6, 1.33, 1.2, 1.4, 0xfafafa);                      // logotipo «TRAM» (bloque blanco y naranja)
+  box(0.04, 0.1, 1.6, 1.33, 1.0, 1.4, 0xf0721c);
+  box(0.04, 0.4, 1.6, -1.33, 1.2, 1.4, 0xfafafa);
+  box(0.04, 0.1, 1.6, -1.33, 1.0, 1.4, 0xf0721c);
   box(1.5, 0.08, 1.2, 0, 3.0, 2.2, 0x44484c);                         // pantógrafo
   box(0.08, 0.3, 0.08, 0.5, 2.92, 2.2, 0x44484c);
   box(0.08, 0.3, 0.08, -0.5, 2.92, 2.2, 0x44484c);
@@ -106,6 +119,10 @@ export class Trams {
         const nx = -tz, nz = tx, y = heightAt(x, z) + 0.09;
         if (prev && !tun && !prevTun) {
           strip(prev.x, prev.z, x, z, nx, nz, 2.9, prev.y, y, 0x58544f);
+          for (const k of [0.3, 1.0, 1.7, 2.4]) {                                                          // traviesas de hormigón
+            const ux = prev.x + (x - prev.x) * (k / 3), uz = prev.z + (z - prev.z) * (k / 3), uy = prev.y + (y - prev.y) * (k / 3);
+            strip(ux, uz, ux + (x - prev.x) * 0.1, uz + (z - prev.z) * 0.1, nx, nz, 2.6, uy + 0.012, uy + 0.012, 0x8f8c86);
+          }
           strip(prev.x, prev.z, x, z, nx, nz, 0.13, prev.y + 0.02, y + 0.02, 0xb4b8bd, -0.72);
           strip(prev.x, prev.z, x, z, nx, nz, 0.13, prev.y + 0.02, y + 0.02, 0xb4b8bd, 0.72);
         }
