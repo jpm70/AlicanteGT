@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { heightAt, toLatLng, toLocal } from './geo';
 import type { CarState } from '../types/game';
 import type { Signals } from './signals';
-import { buildSignTexts } from './busSigns';
+import { buildSignCells, CELL_CITY, PLATE0, PLATES } from './busSigns';
 import { CarSet, MOVING_IDS, VARIANT_IDS, VARIANT_LEN, VehicleLib, type VariantId } from './vehicles';
 
 /** Vía conducible de OSM: [id, clase, sentido (0 doble, 1 único, 2 único inverso), ancho, puntos]. */
@@ -128,9 +128,9 @@ export class Traffic {
   /** Líneas de autobús reales (public/world/bus_routes.json): los autobuses las siguen y paran en sus paradas. */
   setBusRoutes(r: BusRoute[]) {
     this.busRoutes = r;
-    const { texts, cellOf } = buildSignTexts(r);                     // un rótulo LED por línea y destino
+    const { cells, cellOf } = buildSignCells(r);                     // un rótulo LED por línea y destino, matrículas y logotipos
     this.busCell = cellOf;
-    this.lib.setBusSigns(texts);
+    this.lib.setBusSigns(cells);
     this.wayRoutes.clear();
     r.forEach((rt, i) => rt.ways.forEach((id, k) => { const l = this.wayRoutes.get(id); if (l) l.push({ i, k }); else this.wayRoutes.set(id, [{ i, k }]); }));
   }
@@ -221,6 +221,7 @@ export class Traffic {
       list.forEach(([x, z, yaw], j) => {
         this.pose(this.tmpM, x, z, Math.sin(yaw), Math.cos(yaw), t >= 2 ? 4 : 1.8);
         set.set(j, this.tmpM, this.tmpC.setHex(SPECIAL[t].hex));
+        set.setPlate(j, PLATE0 + (Math.round(x) * 3 + j) % PLATES);
       });
       set.flush(); set.addTo(this.scene); spSets.push(set);
     }
@@ -562,7 +563,7 @@ export class Traffic {
       this.pose(this.tmpM, a.rx, a.rz, Math.sin(a.ry), Math.cos(a.ry), a.variant === 'bus' ? 6 : 1.8);
       const hex = a.variant === 'taxi' ? TAXI_PAINT : a.variant === 'bus' ? BUS_PAINT : PAINT[a.col];
       const blink = Math.floor(this.clock * 2.6) % 2 === 0 ? 1 : 0;
-      if (a.variant === 'bus') set.setSign(n, a.route ? this.busCell[a.route.i] ?? 1 : 1);
+      if (a.variant === 'bus') { set.setSign(n, a.route ? this.busCell[a.route.i] ?? CELL_CITY : CELL_CITY); set.setPlate(n, PLATE0 + (a.uid * 7) % PLATES); }
       set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id), a.braking ? 3 : 1, a.sig < 0 || a.haz ? blink : 0, a.sig > 0 || a.haz ? blink : 0);
       counts.set(a.variant, n + 1);
     }
