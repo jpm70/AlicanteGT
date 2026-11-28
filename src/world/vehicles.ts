@@ -6,7 +6,7 @@ export const VARIANT_IDS: VariantId[] = ['sedan', 'hatch', 'suv', 'van', 'taxi',
 /** Variantes que circulan (las de emergencia solo se aparcan junto a sus edificios). */
 export const MOVING_IDS: VariantId[] = ['sedan', 'hatch', 'suv', 'van', 'taxi', 'bus'];
 /** Largo aproximado (m) de cada variante: separaciones al seguir y colisiones. */
-export const VARIANT_LEN: Record<VariantId, number> = { sedan: 4.3, hatch: 4.0, suv: 4.55, van: 5.1, taxi: 4.3, bus: 11.8, police: 4.3, ambulance: 5.1, fire: 9.2 };
+export const VARIANT_LEN: Record<VariantId, number> = { sedan: 4.3, hatch: 4.0, suv: 4.55, van: 5.1, taxi: 4.3, bus: 17.8, police: 4.3, ambulance: 5.1, fire: 9.2 };
 
 /** Superelipse (esquinas redondeadas) de n puntos con semiejes a, b y exponente e. */
 function squircle(n: number, a: number, b: number, e: number): [number, number][] {
@@ -86,7 +86,7 @@ interface Spec {
   st: [number, number, number, number][];
   /** cabina: [y, z trasero, z delantero, semiancho] */
   cab: [number, number, number, number][];
-  wheelZ: [number, number]; wheelR: number; track: number;
+  wheelZ: number[]; wheelR: number; track: number;
   hwMid: number;                       // semiancho de la carrocería a media altura (para pegar detalles)
   doors: number[];                     // z de las juntas de las puertas
   front: number; rear: number;         // z de morro y cola
@@ -124,10 +124,11 @@ const SPECS: Record<VariantId, Spec> = {
     cab: [[0.94, -1.78, 0.98, 0.79], [1.1, -1.62, 0.66, 0.75], [1.28, -1.3, 0.28, 0.68], [1.42, -0.98, -0.02, 0.6]],
     wheelZ: [-1.38, 1.36], wheelR: 0.33, track: 0.84, hwMid: 0.91, doors: [0.35, -0.55], front: 2.15, rear: -2.15, headY: 0.72, tailY: 0.84, plateY: 0.62, mirrorZ: 0.82, mirrorY: 1.0, roofSign: true,
   },
+  // autobús urbano articulado (Mercedes Citaro G de Masatusa/SubÚs): 17,8 m, tres ejes, fuelle entre los dos cuerpos
   bus: {
-    st: [[-5.9, 1.2, 0.5, 2.6], [-5.7, 1.28, 0.4, 3.0], [-4.0, 1.28, 0.36, 3.05], [4.0, 1.28, 0.36, 3.05], [5.6, 1.2, 0.4, 2.7], [5.9, 1.0, 0.5, 2.2]],
-    cab: [[1.05, -5.6, 5.5, 1.3], [1.6, -5.6, 5.5, 1.3], [2.4, -5.55, 5.4, 1.3]],
-    wheelZ: [-3.8, 3.5], wheelR: 0.5, track: 1.12, hwMid: 1.28, doors: [3.0, 0.2], front: 5.9, rear: -5.9, headY: 0.85, tailY: 1.0, plateY: 0.7, mirrorZ: 5.4, mirrorY: 2.0, bus: true,
+    st: [[-8.9, 1.2, 0.5, 2.6], [-8.7, 1.28, 0.4, 3.0], [-7.0, 1.28, 0.36, 3.05], [7.0, 1.28, 0.36, 3.05], [8.6, 1.2, 0.4, 2.7], [8.9, 1.0, 0.5, 2.2]],
+    cab: [[1.05, -8.6, 8.5, 1.3], [1.6, -8.6, 8.5, 1.3], [2.4, -8.55, 8.4, 1.3]],
+    wheelZ: [-6.3, -1.6, 5.6], wheelR: 0.5, track: 1.12, hwMid: 1.28, doors: [4.6, 1.2, -3.6], front: 8.9, rear: -8.9, headY: 0.85, tailY: 1.0, plateY: 0.7, mirrorZ: 8.3, mirrorY: 2.0, bus: true,
   },
 };
 
@@ -188,9 +189,27 @@ function buildVariant(id: VariantId): VariantGeo {
   trim.push(colorVerts(flatBox(0.46, 0.11, 0.03, 0, sp.bus ? 0.55 : 0.46, sp.front + 0.02), [0.93, 0.93, 0.9])); // matrícula delantera
   if (sp.roofSign) trim.push(colorVerts(flatBox(0.55, 0.15, 0.24, 0, roofR[0][1] + 0.14, (sp.cab[3][1] + sp.cab[3][2]) / 2), [0.98, 0.92, 0.55]));
   if (sp.bus) {
-    trim.push(colorVerts(flatBox(0.03, 1.9, 1.15, 1.295, 1.55, 3.3), [0.03, 0.04, 0.05]));                   // puertas de viajeros
-    lights.push(colorVerts(flatBox(1.5, 0.22, 0.04, 0, 2.62, sp.front - 0.02), [1.0, 0.7, 0.15]));             // rótulo de destino
-    trim.push(colorVerts(flatBox(0.9, 0.12, 0.7, 0, roofR[0][1] + 0.18, -1.5), [0.7, 0.7, 0.72]));            // aire acondicionado en el techo
+    // librea de Alicante: cuerpo blanco (la «pintura» se tiñe de blanco) con frontal, zaga, zócalo y bandas de puertas en rojo
+    const RED = [0.77, 0.15, 0.18], GREYB = [0.18, 0.19, 0.21];
+    const hw = sp.hwMid + 0.012;
+    for (const sx of [-1, 1]) {
+      for (const [z0, z1] of [[3.4, 8.8], [-8.8, -5.6]]) trim.push(colorVerts(flatBox(0.03, 0.62, z1 - z0, sx * hw, 0.74, (z0 + z1) / 2), RED));      // zócalo rojo delante y detrás
+      trim.push(colorVerts(flatBox(0.03, 0.16, 17.0, sx * hw, 0.5, 0), [0.62, 0.62, 0.64]));                                                        // faldón gris
+    }
+    for (const dz of [4.6, 1.2, -3.6]) {                                                                                                          // puertas de viajeros (lado derecho) con bandas rojas verticales
+      trim.push(colorVerts(flatBox(0.03, 1.9, 1.15, 1.295, 1.55, dz), [0.03, 0.04, 0.05]));
+      for (const e of [-0.66, 0.66]) trim.push(colorVerts(flatBox(0.035, 2.2, 0.16, 1.3, 1.5, dz + e), RED));
+    }
+    trim.push(colorVerts(flatBox(sp.hwMid * 2.0, 1.15, 0.07, 0, 0.9, sp.front + 0.012), RED));                                                      // frontal rojo
+    trim.push(colorVerts(flatBox(sp.hwMid * 2.0, 0.6, 0.07, 0, 2.62, sp.front + 0.008), RED));                                                      // cenefa roja sobre el parabrisas
+    trim.push(colorVerts(flatBox(sp.hwMid * 2.0, 1.95, 0.07, 0, 1.5, sp.rear - 0.012), RED));                                                       // zaga roja
+    trim.push(colorVerts(flatBox(2.0, 2.2, 1.3, 0, 1.55, -0.2), GREYB));                                                                            // fuelle de la articulación
+    trim.push(colorVerts(flatBox(2.4, 0.08, 1.3, 0, 2.7, -0.2), [0.3, 0.3, 0.33]));
+    lights.push(colorVerts(flatBox(1.5, 0.22, 0.04, 0, 2.62, sp.front + 0.05), [1.0, 0.7, 0.15]));                                                  // rótulo LED ámbar de destino
+    for (let k = 0; k < 7; k++) trim.push(colorVerts(flatBox(0.05, 0.16, 0.02, -0.62 + k * 0.1, 2.62, sp.front + 0.075), [0.35, 0.2, 0.02]));      // puntos apagados del LED (aspecto de matriz)
+    lights.push(colorVerts(flatBox(0.3, 0.2, 0.03, 1.1, 2.0, sp.front + 0.02), [1.0, 0.7, 0.15]));                                                 // rótulo lateral de número de línea
+    trim.push(colorVerts(flatBox(0.9, 0.12, 0.7, 0, roofR[0][1] + 0.18, -3.0), [0.7, 0.7, 0.72]));                                                // aire acondicionado en el techo
+    trim.push(colorVerts(flatBox(0.9, 0.12, 0.7, 0, roofR[0][1] + 0.18, 3.5), [0.7, 0.7, 0.72]));
   } else if (!sp.van) {
     trim.push(colorVerts(flatBox(0.025, 0.2, 0.025, 0.4, roofR[0][1] + 0.14, sp.cab[3][1] + 0.1), dark));   // antena
   }

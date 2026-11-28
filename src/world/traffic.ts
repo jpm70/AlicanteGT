@@ -36,7 +36,7 @@ const BUS_TARGET = 5;
 /** Colores de carrocería: mucho blanco, gris, plata y negro, como en la calle. */
 const PAINT = [0xf2f2f0, 0xf2f2f0, 0xe4e6e8, 0xb9bec3, 0xb9bec3, 0x6d7278, 0x2a2c30, 0x2a2c30, 0x9c2b2b, 0x2d4f8c, 0x5b6b4f, 0xc8b79a];
 const TAXI_PAINT = 0xf4f4f0;
-const BUS_PAINT = 0x1f4e9a;
+const BUS_PAINT = 0xf3f3f1;                    // cuerpo blanco; el rojo de la librea va en los accesorios
 /** Variante de los coches aparcados según el tipo guardado en la tesela (0 turismo, 1 furgoneta, 2 pequeño) y el color. */
 const PARKED_CAR: VariantId[] = ['sedan', 'hatch', 'suv', 'hatch', 'sedan', 'suv', 'hatch', 'sedan', 'suv', 'hatch', 'sedan', 'hatch'];
 const SPEED: Record<string, number> = { trunk: 15, primary: 13, secondary: 11.5, tertiary: 10, residential: 7.5, unclassified: 7.5, living_street: 4.5, primary_link: 8, secondary_link: 8, tertiary_link: 7 };
@@ -46,7 +46,7 @@ const TARGET_AGENTS = 16;
 const CAP: Record<VariantId, number> = { sedan: 40, hatch: 40, suv: 40, van: 16, taxi: 16, bus: 8, police: 0, ambulance: 0, fire: 0 };
 /** Vehículos de emergencia aparcados junto a comisarías, bomberos y hospitales: [x, z, yaw, tipo (0 policía, 1 ambulancia, 2 bomberos, 3 autobús de estación)]. */
 export type SpecialRec = number[];
-const SPECIAL: { v: VariantId; hex: number }[] = [{ v: 'police', hex: 0xf4f4f6 }, { v: 'ambulance', hex: 0xf4f4f0 }, { v: 'fire', hex: 0xc41e1e }, { v: 'bus', hex: 0x1f4e9a }];
+const SPECIAL: { v: VariantId; hex: number }[] = [{ v: 'police', hex: 0xf4f4f6 }, { v: 'ambulance', hex: 0xf4f4f0 }, { v: 'fire', hex: 0xc41e1e }, { v: 'bus', hex: 0xf3f3f1 }];
 
 /** Coches aparcados: solo se dibujan los que están cerca (el resto de los miles del mapa no cuesta nada). */
 const POOL_R = 150;
@@ -521,7 +521,7 @@ export class Traffic {
       const set = this.sets.get(a.variant)!;
       const n = counts.get(a.variant) ?? 0;
       if (n >= CAP[a.variant]) continue;
-      this.pose(this.tmpM, a.rx, a.rz, Math.sin(a.ry), Math.cos(a.ry), a.variant === 'bus' ? 4 : 1.8);
+      this.pose(this.tmpM, a.rx, a.rz, Math.sin(a.ry), Math.cos(a.ry), a.variant === 'bus' ? 6 : 1.8);
       const hex = a.variant === 'taxi' ? TAXI_PAINT : a.variant === 'bus' ? BUS_PAINT : PAINT[a.col];
       const blink = Math.floor(this.clock * 2.6) % 2 === 0 ? 1 : 0;
       set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id), a.braking ? 3 : 1, a.sig < 0 || a.haz ? blink : 0, a.sig > 0 || a.haz ? blink : 0);
@@ -553,7 +553,7 @@ export class Traffic {
     for (const a of this.agents) {
       if (Math.abs(a.x - cx) > 9 || Math.abs(a.z - cz) > 9) continue;
       const bus = a.variant === 'bus';
-      const offs = bus ? [-4.4, -1.5, 1.5, 4.4] : [-a.len * 0.3, 0, a.len * 0.3];
+      const offs = bus ? [-7.6, -5, -2.4, 0.2, 2.8, 5.4, 7.6] : [-a.len * 0.3, 0, a.len * 0.3];
       const min = bus ? 2.35 : 1.9;
       for (const po of [-1.7, 0, 1.7]) for (const ao of offs) {
         const ax = cx + pfx * po, az = cz + pfz * po;
