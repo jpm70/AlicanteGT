@@ -104,7 +104,7 @@ export function createSignAtlas(cells: CellSpec[]): { texture: THREE.CanvasTextu
       c.fillText(cell.t, x + 37 + (w - 43) / 2, oy + CELL_H / 2 + 2);
       c.textAlign = 'start';
     } else if (cell.k === 'logo') {                                     // SubÚs: texto rojo sobre el cuerpo blanco
-      c.fillStyle = '#c4262e'; c.font = 'italic bold 40px "Arial Narrow", Arial, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillStyle = '#d8101c'; c.font = 'italic bold 40px "Arial Narrow", Arial, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
       c.fillText('SubÚs', cx, oy + 24);
       c.fillStyle = '#666'; c.font = 'bold 15px Arial, sans-serif';
       c.fillText('ALICANTE · TRANSPORTE URBANO', cx, oy + 52);
