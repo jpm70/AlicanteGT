@@ -48,7 +48,7 @@ for r in rels:
     ws = [w for w in r["ways"] if w in way_first and inside(*way_first[w])]
     if len(ws) < 3: continue
     st = [[round((node_pos[n][1] - LNG0) * KLNG, 1), round(-(node_pos[n][0] - LAT0) * KLAT, 1)] for n in r["stops"] if n in node_pos and inside(*node_pos[n])]
-    routes.append({"ref": r["ref"], "name": r["name"] or f'{r["from"]} → {r["to"]}', "ways": ws, "stops": st})
+    routes.append({"ref": r["ref"], "name": r["name"] or f'{r["from"]} → {r["to"]}', "to": r["to"], "ways": ws, "stops": st})
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 json.dump({"routes": routes}, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
 print(len(routes), "rutas;", sum(len(r["ways"]) for r in routes), "tramos;", sum(len(r["stops"]) for r in routes), "paradas;", os.path.getsize(OUT) // 1024, "KB")

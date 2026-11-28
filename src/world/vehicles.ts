@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+import { createSignAtlas, SIGN_COLS } from './busSigns';
 export type VariantId = 'sedan' | 'hatch' | 'suv' | 'van' | 'taxi' | 'bus' | 'police' | 'ambulance' | 'fire';
 export const VARIANT_IDS: VariantId[] = ['sedan', 'hatch', 'suv', 'van', 'taxi', 'bus', 'police', 'ambulance', 'fire'];
 /** Variantes que circulan (las de emergencia solo se aparcan junto a sus edificios). */
@@ -147,6 +148,7 @@ interface VariantGeo {
   /** pilotos traseros */ tail: THREE.BufferGeometry;
   /** intermitentes izquierdos / derechos (esquina delantera y trasera) */ sigL: THREE.BufferGeometry; sigR: THREE.BufferGeometry;
   /** faros + pilotos juntos (coches aparcados) */ lightsAll: THREE.BufferGeometry;
+  /** rótulo LED de destino (solo autobús) */ sign: THREE.BufferGeometry | null;
 }
 
 /**
@@ -205,9 +207,7 @@ function buildVariant(id: VariantId): VariantGeo {
     trim.push(colorVerts(flatBox(sp.hwMid * 2.0, 1.95, 0.07, 0, 1.5, sp.rear - 0.012), RED));                                                       // zaga roja
     trim.push(colorVerts(flatBox(2.0, 2.2, 1.3, 0, 1.55, -0.2), GREYB));                                                                            // fuelle de la articulación
     trim.push(colorVerts(flatBox(2.4, 0.08, 1.3, 0, 2.7, -0.2), [0.3, 0.3, 0.33]));
-    lights.push(colorVerts(flatBox(1.5, 0.22, 0.04, 0, 2.62, sp.front + 0.05), [1.0, 0.7, 0.15]));                                                  // rótulo LED ámbar de destino
-    for (let k = 0; k < 7; k++) trim.push(colorVerts(flatBox(0.05, 0.16, 0.02, -0.62 + k * 0.1, 2.62, sp.front + 0.075), [0.35, 0.2, 0.02]));      // puntos apagados del LED (aspecto de matriz)
-    lights.push(colorVerts(flatBox(0.3, 0.2, 0.03, 1.1, 2.0, sp.front + 0.02), [1.0, 0.7, 0.15]));                                                 // rótulo lateral de número de línea
+    trim.push(colorVerts(flatBox(1.6, 0.3, 0.05, 0, 2.62, sp.front + 0.03), [0.02, 0.02, 0.02]));                                                  // marco del rótulo de destino (el texto LED es una malla aparte)
     trim.push(colorVerts(flatBox(0.9, 0.12, 0.7, 0, roofR[0][1] + 0.18, -3.0), [0.7, 0.7, 0.72]));                                                // aire acondicionado en el techo
     trim.push(colorVerts(flatBox(0.9, 0.12, 0.7, 0, roofR[0][1] + 0.18, 3.5), [0.7, 0.7, 0.72]));
   } else if (!sp.van) {
@@ -231,6 +231,7 @@ function buildVariant(id: VariantId): VariantGeo {
     paint: mergeGeometries(paint, false)!, trim: mergeGeometries(trim, false)!,
     glass: mergeGeometries(glass, false)!, lights: mergeGeometries(lights, false)!, tail: mergeGeometries(tail, false)!,
     sigL: mergeGeometries(sigL, false)!, sigR: mergeGeometries(sigR, false)!, lightsAll: mergeGeometries([...lights, ...tail], false)!,
+    sign: sp.bus ? new THREE.PlaneGeometry(1.52, 0.24).translate(0, 2.62, sp.front + 0.062) : null,
   };
 }
 
@@ -244,8 +245,11 @@ export class CarSet {
   readonly tail: THREE.InstancedMesh | null;
   readonly sigL: THREE.InstancedMesh | null;
   readonly sigR: THREE.InstancedMesh | null;
+  /** rótulo LED de destino del autobús (celda del atlas por instancia) */
+  readonly sign: THREE.InstancedMesh | null;
+  private signCells: THREE.InstancedBufferAttribute | null = null;
   private tmpC = new THREE.Color();
-  constructor(g: VariantGeo, mats: { paint: THREE.Material; trim: THREE.Material; glass: THREE.Material; lights: THREE.Material }, count: number, moving: boolean, shadow = true) {
+  constructor(g: VariantGeo, mats: { paint: THREE.Material; trim: THREE.Material; glass: THREE.Material; lights: THREE.Material; sign?: THREE.Material }, count: number, moving: boolean, shadow = true) {
     this.paint = new THREE.InstancedMesh(g.paint, mats.paint, count);
     this.trim = new THREE.InstancedMesh(g.trim, mats.trim, count);
     this.glass = new THREE.InstancedMesh(g.glass, mats.glass, count);
@@ -253,9 +257,17 @@ export class CarSet {
     this.tail = moving ? new THREE.InstancedMesh(g.tail, mats.lights, count) : null;
     this.sigL = moving ? new THREE.InstancedMesh(g.sigL, mats.lights, count) : null;
     this.sigR = moving ? new THREE.InstancedMesh(g.sigR, mats.lights, count) : null;
-    for (const m of this.all()) { m.frustumCulled = false; m.castShadow = shadow && !(m === this.lights || m === this.tail || m === this.sigL || m === this.sigR); }
+    if (g.sign && mats.sign) {
+      const geo = g.sign.clone();
+      this.signCells = new THREE.InstancedBufferAttribute(new Float32Array(count), 1);
+      geo.setAttribute('aCell', this.signCells);
+      this.sign = new THREE.InstancedMesh(geo, mats.sign, count);
+    } else this.sign = null;
+    for (const m of this.all()) { m.frustumCulled = false; m.castShadow = shadow && !(m === this.lights || m === this.tail || m === this.sigL || m === this.sigR || m === this.sign); }
   }
-  private all(): THREE.InstancedMesh[] { return [this.paint, this.trim, this.glass, this.lights, ...(this.tail ? [this.tail, this.sigL!, this.sigR!] : [])]; }
+  private all(): THREE.InstancedMesh[] { return [this.paint, this.trim, this.glass, this.lights, ...(this.tail ? [this.tail, this.sigL!, this.sigR!] : []), ...(this.sign ? [this.sign] : [])]; }
+  /** Celda del atlas de rótulos que muestra la instancia i (0 = fuera de servicio, 1 = ALICANTE, …). */
+  setSign(i: number, cell: number) { if (this.signCells) this.signCells.setX(i, cell); }
   /** tailK: brillo de los pilotos (1 normal, más al frenar); sigL/sigR: 1 = intermitente encendido. */
   set(i: number, m: THREE.Matrix4, color: THREE.Color, tailK = 1, sigL = 0, sigR = 0) {
     for (const x of this.all()) x.setMatrixAt(i, m);
@@ -271,6 +283,7 @@ export class CarSet {
   flush() {
     for (const m of this.all()) m.instanceMatrix.needsUpdate = true;
     for (const m of [this.paint, this.tail, this.sigL, this.sigR]) if (m?.instanceColor) m.instanceColor.needsUpdate = true;
+    if (this.signCells) this.signCells.needsUpdate = true;
   }
   addTo(scene: THREE.Scene) { scene.add(...this.all()); }
   removeFrom(scene: THREE.Scene) { scene.remove(...this.all()); }
@@ -285,7 +298,39 @@ export class VehicleLib {
     trim: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.15 }),
     glass: new THREE.MeshStandardMaterial({ color: 0x0a1016, roughness: 0.05, metalness: 0.9, envMapIntensity: 1.5 }),
     lights: new THREE.MeshBasicMaterial({ vertexColors: true }),
+    /** rótulo LED: sin iluminación, con la celda del atlas elegida por instancia (atributo aCell) */
+    sign: new THREE.MeshBasicMaterial({ toneMapped: false }),
   };
+  private signUniforms = { uRows: { value: 1 }, uCols: { value: SIGN_COLS } };
+
+  constructor() {
+    const mat = this.mats.sign;
+    mat.customProgramCacheKey = () => 'bus-sign';
+    mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uRows = this.signUniforms.uRows;
+      sh.uniforms.uCols = this.signUniforms.uCols;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float aCell; varying float vCell;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCell = aCell;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vCell; uniform float uRows; uniform float uCols;')
+        .replace('#include <map_fragment>', `
+          float sRow = floor((vCell + 0.5) / uCols);
+          float sCol = vCell - sRow * uCols;
+          vec2 suv = vec2((sCol + vMapUv.x) / uCols, 1.0 - (sRow + (1.0 - vMapUv.y)) / uRows);
+          diffuseColor *= texture2D(map, suv);`);
+    };
+    this.setBusSigns(['FUERA DE SERVICIO', 'ALICANTE']);
+  }
+
+  /** (Re)genera el atlas de rótulos con los textos dados (celda 0 = fuera de servicio, 1 = sin línea). */
+  setBusSigns(texts: string[]) {
+    const { texture, rows } = createSignAtlas(texts);
+    this.mats.sign.map?.dispose();
+    this.mats.sign.map = texture;
+    this.mats.sign.needsUpdate = true;
+    this.signUniforms.uRows.value = rows;
+  }
   /** Luces de los coches aparcados (se apagan de noche). */
   readonly parkedLights = new THREE.MeshBasicMaterial({ vertexColors: true });
 
@@ -301,11 +346,12 @@ export class VehicleLib {
 
   setLightLevel(lv: number) {
     this.mats.lights.color.setScalar(1 + 1.8 * lv);
+    this.mats.sign.color.setScalar(1 + 1.2 * lv);
     this.parkedLights.color.setScalar(1 - 0.85 * lv);
   }
 
   dispose() {
-    for (const g of this.geos.values()) { g.paint.dispose(); g.trim.dispose(); g.glass.dispose(); g.lights.dispose(); g.tail.dispose(); g.sigL.dispose(); g.sigR.dispose(); g.lightsAll.dispose(); }
+    for (const g of this.geos.values()) { g.paint.dispose(); g.trim.dispose(); g.glass.dispose(); g.lights.dispose(); g.tail.dispose(); g.sigL.dispose(); g.sigR.dispose(); g.lightsAll.dispose(); g.sign?.dispose(); }
     for (const m of Object.values(this.mats)) m.dispose();
     this.parkedLights.dispose();
   }

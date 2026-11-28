@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { heightAt, toLatLng, toLocal } from './geo';
 import type { CarState } from '../types/game';
 import type { Signals } from './signals';
+import { buildSignTexts } from './busSigns';
 import { CarSet, MOVING_IDS, VARIANT_IDS, VARIANT_LEN, VehicleLib, type VariantId } from './vehicles';
 
 /** Vía conducible de OSM: [id, clase, sentido (0 doble, 1 único, 2 único inverso), ancho, puntos]. */
@@ -28,7 +29,7 @@ interface Agent {
 }
 
 /** Línea de autobús de OSM: tramos (ids de vía) en orden y paradas. */
-export interface BusRoute { ref: string; name: string; ways: number[]; stops: number[][] }
+export interface BusRoute { ref: string; name: string; to?: string; ways: number[]; stops: number[][] }
 /** Prioridad de cada clase de vía en los cruces sin semáforo. */
 const RANK: Record<string, number> = { motorway: 7, trunk: 6, primary: 5, secondary: 4, tertiary: 3, unclassified: 2, residential: 2, primary_link: 4, secondary_link: 3, tertiary_link: 2, living_street: 1 };
 const BUS_TARGET = 5;
@@ -67,6 +68,7 @@ export class Traffic {
   private parked = new Map<string, CarSet[]>();
   private nextUid = 1;
   private busRoutes: BusRoute[] = [];
+  private busCell: number[] = [];
   private wayRoutes = new Map<number, { i: number; k: number }[]>();
   private busTimer = 0;
   private parkedTiles = new Map<string, ParkedTile>();
@@ -126,6 +128,9 @@ export class Traffic {
   /** Líneas de autobús reales (public/world/bus_routes.json): los autobuses las siguen y paran en sus paradas. */
   setBusRoutes(r: BusRoute[]) {
     this.busRoutes = r;
+    const { texts, cellOf } = buildSignTexts(r);                     // un rótulo LED por línea y destino
+    this.busCell = cellOf;
+    this.lib.setBusSigns(texts);
     this.wayRoutes.clear();
     r.forEach((rt, i) => rt.ways.forEach((id, k) => { const l = this.wayRoutes.get(id); if (l) l.push({ i, k }); else this.wayRoutes.set(id, [{ i, k }]); }));
   }
@@ -524,6 +529,7 @@ export class Traffic {
       this.pose(this.tmpM, a.rx, a.rz, Math.sin(a.ry), Math.cos(a.ry), a.variant === 'bus' ? 6 : 1.8);
       const hex = a.variant === 'taxi' ? TAXI_PAINT : a.variant === 'bus' ? BUS_PAINT : PAINT[a.col];
       const blink = Math.floor(this.clock * 2.6) % 2 === 0 ? 1 : 0;
+      if (a.variant === 'bus') set.setSign(n, a.route ? this.busCell[a.route.i] ?? 1 : 1);
       set.set(n, this.tmpM, a.variant === 'taxi' || a.variant === 'bus' ? this.tmpC.setHex(hex) : this.tone(hex, a.col + a.way.id), a.braking ? 3 : 1, a.sig < 0 || a.haz ? blink : 0, a.sig > 0 || a.haz ? blink : 0);
       counts.set(a.variant, n + 1);
     }
