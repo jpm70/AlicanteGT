@@ -1374,7 +1374,8 @@ def build_tile(args):
     stone_c = hexrgb(0xd9d3c3); water_c = hexrgb(0x4aa3d6); bronze_c = hexrgb(0x6b5a3a)
     for (fx, fz, R, sc, star, fid) in FOUNTAINS:
         if x0 <= fx < x1 and z0 <= fz < z1:
-            lm_parts += fountain_at(fx, fz, float(hf(fx, fz)), R, sc, stone_c, water_c, bronze_c, star)
+            if fid == -3: lm_parts += luceros_at(fx, fz, float(hf(fx, fz)), R)
+            else: lm_parts += fountain_at(fx, fz, float(hf(fx, fz)), R, sc, stone_c, water_c, bronze_c, star)
             lm_obst.append({"id": fid, "h": 4, "p": [[round(fx + (R + 0.2) * math.cos(a * math.pi / 8), 2), round(fz + (R + 0.2) * math.sin(a * math.pi / 8), 2)] for a in range(17)]})
 
     # --- castillo ---

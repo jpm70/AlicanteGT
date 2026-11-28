@@ -104,6 +104,49 @@ def fountain_at(cx, cz, g, R, sc, stone, water, bronze, star=True):
     return parts
 
 
+def luceros_at(cx, cz, g, R):
+    """Fuente de la Plaza de los Luceros (Daniel Bañuls, 1930s): pila circular de arenisca con borde festoneado, cuerpo central escalonado,
+    cuatro grupos de caballos y una torre estrecha y escalonada con figura en relieve y remate en punta (referencia: fotos aportadas por el usuario)."""
+    sand = hexrgb(0xd2b78c); dark = hexrgb(0xb89a6c); light = hexrgb(0xe3d2b0); water = hexrgb(0x4aa3d6); foam = hexrgb(0xdff1fa)
+    P = []
+    P.append(cyl_at(cx, cz, g - 0.5, g + 0.6, R, sand, 48))                                   # muro de la pila
+    P.append(cyl_at(cx, cz, g + 0.4, g + 0.82, R - 0.9, water, 48))                             # agua
+    for k in range(40):                                                                         # borde festoneado: media esfera por «gallón»
+        a = k * 2 * math.pi / 40
+        P.append(dome_at(cx + math.cos(a) * (R - 0.35), cz + math.sin(a) * (R - 0.35), g + 0.55, 0.62, 0.5, dark))
+    P.append(cyl_at(cx, cz, g + 0.4, g + 1.7, R * 0.64, dark, 36))                             # base circular escalonada
+    P.append(cyl_at(cx, cz, g + 1.7, g + 2.3, R * 0.56, sand, 36))
+    for k in range(8):                                                                          # chorros: surtidores bajos alrededor
+        a = k * math.pi / 4 + math.pi / 8
+        P.append(cyl_at(cx + math.cos(a) * (R * 0.72), cz + math.sin(a) * (R * 0.72), g + 0.9, g + 2.0, 0.09, foam, 6))
+    for k in range(4):                                                                          # grupos de caballos en las diagonales
+        a = math.pi / 4 + k * math.pi / 2; ca, sa = math.cos(a), math.sin(a)
+        hx_, hz_ = cx + ca * R * 0.46, cz + sa * R * 0.46                                      # peana
+        ang = -(a + math.pi / 2)                                                                # el caballo mira en sentido tangente
+        tx, tz = -sa, ca
+        P.append(box_at(hx_, hz_, g + 2.3, g + 3.0, 2.8, 1.5, ang, dark))
+        P.append(box_at(hx_, hz_, g + 3.0, g + 4.0, 2.3, 0.85, ang, sand))                     # cuerpo
+        P.append(box_at(hx_ + tx * 1.35, hz_ + tz * 1.35, g + 3.7, g + 5.1, 0.62, 0.62, ang, sand))   # cuello
+        P.append(box_at(hx_ + tx * 1.75, hz_ + tz * 1.75, g + 4.8, g + 5.25, 0.95, 0.46, ang, sand))  # cabeza
+        for off, zz in ((-0.95, -0.28), (-0.95, 0.28), (0.85, -0.28), (0.85, 0.28)):
+            P.append(box_at(hx_ + tx * off + ca * zz, hz_ + tz * off + sa * zz, g + 3.0, g + 3.6, 0.2, 0.2, ang, light))   # patas
+    P.append(box_at(cx, cz, g + 2.3, g + 4.7, 4.6, 4.6, 0, dark))                               # zócalo de la torre
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            P.append(box_at(cx + sx * 1.75, cz + sz * 1.75, g + 4.7, g + 6.2, 0.55, 0.55, 0, light))   # pilastras de esquina
+    P.append(box_at(cx, cz, g + 4.7, g + 8.8, 2.9, 2.9, 0, sand))                               # primer cuerpo
+    P.append(box_at(cx, cz, g + 8.8, g + 9.2, 3.3, 3.3, 0, light))                              # cornisa
+    P.append(box_at(cx, cz, g + 9.2, g + 15.0, 2.0, 2.0, 0, sand))                              # fuste
+    for ang in (0, math.pi / 2):                                                                # figura en relieve en las cuatro caras
+        P.append(box_at(cx, cz, g + 10.2, g + 13.4, 0.75, 2.1, ang, light))
+        P.append(box_at(cx, cz, g + 13.4, g + 14.0, 0.55, 2.12, ang, dark))
+    P.append(box_at(cx, cz, g + 15.0, g + 15.5, 2.5, 2.5, 0, light))                            # cornisa superior
+    P.append(box_at(cx, cz, g + 15.5, g + 16.6, 1.5, 1.5, 0, sand))
+    P.append(pyramid_at(cx, cz, g + 16.6, 0.95, 3.6, dark))                                     # aguja
+    P.append(dome_at(cx, cz, g + 20.15, 0.28, 0.28, hexrgb(0xe9d9a8)))                          # remate
+    return P
+
+
 def write_glb(path, parts):
     from pygltflib import GLTF2, Scene, Node, Mesh, Primitive, Buffer, BufferView, Accessor, Asset, FLOAT, UNSIGNED_INT, UNSIGNED_BYTE, Attributes, ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER
     g = GLTF2(asset=Asset(version="2.0", generator="alicantegt"), scenes=[Scene(nodes=[])], scene=0)
