@@ -242,8 +242,38 @@ export class Traffic {
         }
         return false;
       };
-      removed = parked.filter((rec) => nearJunction(rec[0], rec[1]));
-      parked = parked.filter((rec) => !nearJunction(rec[0], rec[1]));
+      // y sin coches atravesados sobre otra calzada: si hay un tramo de vía no paralelo (> 30°) dentro de su ancho, el coche queda cruzado en medio de esa calle
+      // (cruces en los que una vía atraviesa a otra sin cortarse en el nodo, bordes de glorieta…)
+      const S = 12, segCells = new Map<string, number[][]>();
+      for (const r of roads) {
+        const pts = r[4], hw = r[3] / 2;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const ax = pts[i][0], az = pts[i][1], bx = pts[i + 1][0], bz = pts[i + 1][1], l = Math.hypot(bx - ax, bz - az);
+          if (l < 0.5) continue;
+          const seg = [ax, az, bx, bz, (bx - ax) / l, (bz - az) / l, hw, l];
+          const n = Math.max(1, Math.floor(l / 6));
+          for (let k = 0; k <= n; k++) {
+            const key = `${Math.floor((ax + (bx - ax) * k / n) / S)},${Math.floor((az + (bz - az) * k / n) / S)}`;
+            const arr = segCells.get(key);
+            if (!arr) segCells.set(key, [seg]); else if (arr[arr.length - 1] !== seg) arr.push(seg);
+          }
+        }
+      }
+      const acrossRoad = (x: number, z: number, yaw: number) => {
+        const fx = Math.sin(yaw), fz = Math.cos(yaw), cx = Math.floor(x / S), cz = Math.floor(z / S);
+        for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+          const arr = segCells.get(`${cx + i},${cz + j}`);
+          if (!arr) continue;
+          for (const [ax, az, bx, bz, tx, tz, hw, l] of arr) {
+            const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (z - az) * (bz - az)) / (l * l)));
+            if (Math.hypot(x - (ax + (bx - ax) * t), z - (az + (bz - az) * t)) < hw + 0.3 && Math.abs(tx * fx + tz * fz) < 0.87) return true;
+          }
+        }
+        return false;
+      };
+      const bad = (rec: ParkedRec) => nearJunction(rec[0], rec[1]) || acrossRoad(rec[0], rec[1], rec[2]);
+      removed = parked.filter(bad);
+      parked = parked.filter((rec) => !bad(rec));
     }
     if (parked.length) {
       const n = parked.length;
@@ -512,10 +542,13 @@ export class Traffic {
         const k = 1 - Math.exp(-9 * dt), ox = a.rx, oz = a.rz;
         a.rx += (a.x - a.rx) * k; a.rz += (a.z - a.rz) * k;
         const mx = a.rx - ox, mz = a.rz - oz;
-        if (mx * mx + mz * mz > 1e-5) {                                         // el rumbo sigue la trayectoria real (no el de la vía a la que va a saltar)
-          let d = Math.atan2(mx, mz) - a.ry;
+        // el rumbo sigue la trayectoria real mientras el coche se mueve y aún no ha llegado a su sitio (no el de la vía a la que va a saltar);
+        // ya asentado (parado en un semáforo, en una cola…) vuelve al rumbo de su vía: antes se quedaba con el ángulo del giro y el coche quedaba atravesado
+        const settled = Math.abs(a.rx - a.x) + Math.abs(a.rz - a.z) < 0.2;
+        if (settled || mx * mx + mz * mz > 1e-5) {
+          let d = (settled ? Math.atan2(a.fx, a.fz) : Math.atan2(mx, mz)) - a.ry;
           d = Math.atan2(Math.sin(d), Math.cos(d));
-          a.ry += d * (1 - Math.exp(-10 * dt));
+          a.ry += d * (1 - Math.exp(-(settled ? 6 : 10) * dt));
         }
       }
       keep.push(a);
