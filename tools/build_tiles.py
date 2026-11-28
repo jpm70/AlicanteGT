@@ -42,7 +42,7 @@ SC_COLS = [0xfaf8f2, 0xfaf8f2, 0xf3efe4, 0xf7efd9, 0xdbe8f2, 0xf2dcc6, 0xfaf8f2,
 PLAZA = (82.0, -195.0)                    # Plaza del Ayuntamiento
 SANTA_CRUZ = (-110.0, -470.0, 135.0)      # barrio de Santa Cruz (cx, cz, radio)
 LM_AYTO, LM_CONCA, LM_SMARIA, LM_MERCAT, LM_AUDIT, LM_SOL = 265207919, 83998999, 22560738, 21410214, 515871894, 53271502
-LM_COL = {LM_AYTO: 0xe3b48f, LM_CONCA: 0xe6dcc3, LM_SMARIA: 0xe0b685, LM_MERCAT: 0xf1dea0, LM_AUDIT: 0xf4f1ea,
+LM_COL = {LM_AYTO: 0xe3b48f, LM_CONCA: 0xe6dcc3, LM_SMARIA: 0xe0b685, LM_MERCAT: 0xb97f5a, LM_AUDIT: 0xf4f1ea,
           22561001: 0xe0b685, 156992115: 0xe7b8a8, 33197578: 0xf2ecde, 22588102: 0xf3f3f1}
 FOUNTAINS = [  # (x, z, radio, escala, estrella, id colisión)
     (-757.0, -312.0, 9.0, 1.6, True, -3),     # Luceros (Plaça dels Estels)
@@ -899,6 +899,7 @@ def build_tile(args):
             elif cfl: h = cfl * FLOOR + 1.2; levels = float(cfl)
             elif lv and lv.replace(".", "").isdigit(): h = float(lv) * FLOOR + 1.2; levels = float(lv)
             else: h = 10.5; levels = h / FLOOR
+            if e["id"] == LM_MERCAT: h = 15.0
             h = max(3.0, min(h, 90.0)); levels_f = h / FLOOR
             st = style_for(levels, seed)
             col = hexrgb(WALL_COLS[seed % len(WALL_COLS)])
@@ -1497,36 +1498,89 @@ def landmark_extras(eid, poly, rh, ytop, lm_parts, road_lines):
             tx_, tz_ = toward_centroid(poly, q, 3.8)
             lm_parts += tower_at(tx_, tz_, float(rh.min()) - 0.5, ytop + 10.0, 6.0, ang, stone, hexrgb(0xb2593a), 6.5)
     elif eid == LM_MERCAT:
-        mr = poly.minimum_rotated_rectangle; mc = list(mr.exterior.coords)[:4]
-        e1 = (mc[1][0] - mc[0][0], mc[1][1] - mc[0][1]); ang_m = -math.atan2(e1[1], e1[0])
-        green = hexrgb(0x5f8f8a); cream = hexrgb(0xf1dea0)
-        lm_parts.append(cyl_at(cc.x, cc.y, ytop - 0.5, ytop + 3.0, 7.5, hexrgb(0xe9d89a)))
-        lm_parts.append(dome_at(cc.x, cc.y, ytop + 3.0, 7.5, 5.5, green))
-        lm_parts.append(cyl_at(cc.x, cc.y, ytop + 8.0, ytop + 10.5, 1.0, cream, 12))
-        lm_parts.append(dome_at(cc.x, cc.y, ytop + 10.5, 1.2, 1.6, green))
-        for q in mc:
-            tx_, tz_ = toward_centroid(poly, q, 3.5)
-            lm_parts += tower_at(tx_, tz_, float(rh.min()) - 0.5, ytop + 5.0, 5.5, ang_m, cream, green, 6.0)
-        best = None
-        for r_ in road_lines:
-            if r_["k"] not in ("primary", "secondary"): continue
-            for (rx, rz) in r_["p"]:
-                dd = math.hypot(rx - cc.x, rz - cc.y)
-                if dd < 90 and (best is None or dd < best[0]): best = (dd, rx, rz)
-        if best:
-            pxy = (best[1], best[2]); be = None
-            for a_, b_ in zip(mc, mc[1:] + mc[:1]):
-                mid = ((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2); dd = math.hypot(mid[0] - pxy[0], mid[1] - pxy[1])
-                if be is None or dd < be[0]: be = (dd, a_, b_, mid)
-            _, a_, b_, mid = be
-            dx, dz = b_[0] - a_[0], b_[1] - a_[1]; ll = math.hypot(dx, dz) or 1; dx, dz = dx / ll, dz / ll
-            nx, nz = dz, -dx
-            if nx * (pxy[0] - mid[0]) + nz * (pxy[1] - mid[1]) < 0: nx, nz = -nx, -nz
-            angp = -math.atan2(dz, dx); gg = float(hf(mid[0], mid[1]))
-            for sg in (-1, 1):
-                lm_parts.append(box_at(mid[0] + dx * sg * 4.2 + nx * 0.7, mid[1] + dz * sg * 4.2 + nz * 0.7, gg - 0.3, gg + 9.5, 1.8, 2.4, angp, cream))
-            lm_parts.append(box_at(mid[0] + nx * 0.7, mid[1] + nz * 0.7, gg + 9.5, gg + 12.5, 10.8, 2.4, angp, cream))
-            lm_parts.append(box_at(mid[0] + nx * 0.2, mid[1] + nz * 0.2, gg - 0.3, gg + 9.5, 6.8, 0.6, angp, hexrgb(0x2b2622)))
+        # Mercado Central (1921, E. Sánchez Sedeño): nave de ladrillo con ventanas altas y estrechas, cornisa de piedra, fachada principal con torre escalonada
+        # y «MERCADO» sobre la escalinata, y rotonda de la pescadería con cúpula de pizarra (referencias libres de Wikimedia Commons, CC0/CC BY-SA).
+        stone = hexrgb(0xe6dcc3); dark = hexrgb(0x3a3f46); slate = hexrgb(0x7a7f86); gold = hexrgb(0xc9a15a)
+        pts = list(poly.exterior.coords)[:-1]; g0 = float(rh.min())
+        n_ = len(pts); edges = []
+        for i in range(n_):
+            a_, b_ = pts[i], pts[(i + 1) % n_]; L_ = math.hypot(b_[0] - a_[0], b_[1] - a_[1])
+            edges.append((L_, a_, b_))
+        # rotonda: la cadena de aristas cortas (< 4,5 m) forma el arco de la pescadería
+        runs, cur = [], []
+        for i in range(2 * n_):                                                      # rachas de aristas cortas consecutivas (la mayor es el arco)
+            L_, a_, b_ = edges[i % n_]
+            if L_ < 4.5: cur.append(a_); cur.append(b_)
+            else:
+                if cur: runs.append(cur)
+                cur = []
+        if cur: runs.append(cur)
+        rot = None
+        if runs:
+            arc = np.array(max(runs, key=len))
+            if len(arc) >= 10:
+                A_ = np.c_[2 * arc[:, 0], 2 * arc[:, 1], np.ones(len(arc))]; bb_ = (arc ** 2).sum(1)
+                sol = np.linalg.lstsq(A_, bb_, rcond=None)[0]; rr = math.sqrt(max(sol[2] + sol[0] ** 2 + sol[1] ** 2, 1.0))
+                if 3.0 < rr < 14.0: rot = (float(sol[0]), float(sol[1]), rr)
+        brick = hexrgb(0xb97f5a)
+        for L_, a_, b_ in edges:                                            # losa de ladrillo lisa sobre cada muro: oculta las ventanas genéricas del atlas
+            if L_ < 0.3: continue
+            dx, dz = (b_[0] - a_[0]) / L_, (b_[1] - a_[1]) / L_; nx, nz = dz, -dx
+            mx, mz = (a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2
+            if nx * (mx - cc.x) + nz * (mz - cc.y) < 0: nx, nz = -nx, -nz
+            lm_parts.append(box_at(mx + nx * 0.17, mz + nz * 0.17, float(hf(mx, mz)) - 0.4, ytop, L_ + 0.25, 0.34, -math.atan2(dz, dx), brick))
+        for L_, a_, b_ in edges:
+            if L_ < 6.0: continue
+            dx, dz = (b_[0] - a_[0]) / L_, (b_[1] - a_[1]) / L_; nx, nz = dz, -dx
+            mx, mz = (a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2
+            if nx * (mx - cc.x) + nz * (mz - cc.y) < 0: nx, nz = -nx, -nz
+            ang_e = -math.atan2(dz, dx)
+            if rot and math.hypot(mx - rot[0], mz - rot[1]) < rot[2] + 3.0: continue
+            lm_parts.append(box_at(mx + nx * 0.35, mz + nz * 0.35, ytop - 1.6, ytop - 0.8, L_ + 0.3, 0.5, ang_e, stone))       # cornisa de piedra
+            lm_parts.append(box_at(mx + nx * 0.4, mz + nz * 0.4, g0 + 2.4, g0 + 3.0, L_, 0.42, ang_e, stone))              # zócalo de piedra
+            k = max(1, int(L_ // 4.2))
+            for j in range(k):
+                t = (j + 0.5) / k
+                wx, wz = a_[0] + (b_[0] - a_[0]) * t, a_[1] + (b_[1] - a_[1]) * t
+                lm_parts.append(box_at(wx + nx * 0.4, wz + nz * 0.4, ytop - 11.0, ytop - 3.4, 0.9, 0.2, ang_e, dark))        # ventana alta y estrecha (persiana)
+        if rot:
+            rcx, rcz, rr = rot
+            lm_parts.append(dome_at(rcx, rcz, ytop - 0.4, rr * 0.98, rr * 0.8, slate))
+            lm_parts.append(cyl_at(rcx, rcz, ytop + rr * 0.78 - 0.4, ytop + rr * 0.78 + 1.6, 1.1, stone, 12))
+            lm_parts.append(dome_at(rcx, rcz, ytop + rr * 0.78 + 1.6, 1.3, 1.5, slate))
+            for q in range(20):
+                a2 = q * 2 * math.pi / 20
+                lm_parts.append(box_at(rcx + math.cos(a2) * (rr + 0.4), rcz + math.sin(a2) * (rr + 0.4), g0 + 4.0, ytop - 2.2, 0.95, 0.2, -a2 - math.pi / 2, dark))
+        def _dseg(q, a_, b_):
+            ddx, ddz = b_[0] - a_[0], b_[1] - a_[1]; l2 = ddx * ddx + ddz * ddz or 1.0
+            t_ = max(0.0, min(1.0, ((q[0] - a_[0]) * ddx + (q[1] - a_[1]) * ddz) / l2)); return math.hypot(q[0] - a_[0] - t_ * ddx, q[1] - a_[1] - t_ * ddz)
+        be = None                                                           # fachada principal: la arista larga más cercana a la avenida (distancia a la calzada, no al nodo)
+        for L_, a_, b_ in edges:
+            if L_ < 14.0: continue
+            mid = ((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2); dd = 1e9
+            for r_ in road_lines:
+                if r_["k"] not in ("primary", "secondary"): continue
+                pp = r_["p"]
+                for i_ in range(len(pp) - 1): dd = min(dd, _dseg(mid, pp[i_], pp[i_ + 1]))
+            if dd < 90 and (be is None or dd < be[0]): be = (dd, a_, b_, mid)
+        if True:
+            if be:
+                _, a_, b_, mid = be
+                dx, dz = b_[0] - a_[0], b_[1] - a_[1]; ll = math.hypot(dx, dz) or 1; dx, dz = dx / ll, dz / ll
+                nx, nz = dz, -dx
+                if nx * (mid[0] - cc.x) + nz * (mid[1] - cc.y) < 0: nx, nz = -nx, -nz
+                angp = -math.atan2(dz, dx); gg = float(hf(mid[0], mid[1]))
+                # torre central escalonada con el rótulo «MERCADO» y pináculos
+                lm_parts.append(box_at(mid[0] + nx * 0.5, mid[1] + nz * 0.5, gg - 0.3, ytop + 5.5, 7.4, 1.6, angp, stone))
+                lm_parts.append(box_at(mid[0] + nx * 0.9, mid[1] + nz * 0.9, ytop - 6.5, ytop + 3.5, 3.6, 0.5, angp, hexrgb(0xf7f3ea)))   # panel «MERCADO»
+                for q in range(5): lm_parts.append(box_at(mid[0] + nx * 1.18 + dx * (q - 2) * 0.62, mid[1] + nz * 1.18 + dz * (q - 2) * 0.62, ytop - 5.2, ytop + 2.2, 0.16, 0.1, angp, hexrgb(0x8a8378)))
+                lm_parts.append(box_at(mid[0] + nx * 0.5, mid[1] + nz * 0.5, ytop + 5.5, ytop + 6.4, 8.2, 2.0, angp, stone))
+                for sg in (-1, 1):
+                    lm_parts.append(box_at(mid[0] + dx * sg * 4.6 + nx * 0.4, mid[1] + dz * sg * 4.6 + nz * 0.4, gg - 0.3, ytop + 1.5, 2.2, 2.2, angp, stone))   # contrafuertes laterales
+                    lm_parts.append(box_at(mid[0] + dx * sg * 4.6 + nx * 0.4, mid[1] + dz * sg * 4.6 + nz * 0.4, ytop + 1.5, ytop + 2.4, 2.6, 2.6, angp, gold))
+                lm_parts.append(box_at(mid[0] + nx * 0.2, mid[1] + nz * 0.2, gg - 0.3, gg + 6.0, 5.4, 0.7, angp, dark))                       # gran puerta de cristal y hierro
+                for st_i in range(5):                                                                                                         # escalinata de piedra
+                    lm_parts.append(box_at(mid[0] + nx * (1.2 + (4 - st_i) * 0.55), mid[1] + nz * (1.2 + (4 - st_i) * 0.55), gg - 0.3, gg + 0.22 * (st_i + 1), 9.0, 0.6, angp, hexrgb(0xb5b0a4)))
     elif eid == LM_AUDIT:
         lm_parts.append(dome_at(cc.x, cc.y, ytop - 0.5, 7.0, 6.0, hexrgb(0xf4f1ea)))
     elif eid in LM_CHURCH or eid == LM_STATION:
