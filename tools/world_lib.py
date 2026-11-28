@@ -152,20 +152,32 @@ def luceros_at(cx, cz, g, R):
         tx, tz = -sa, ca
         P.append(box_at(hx_ + tx * 0.3, hz_ + tz * 0.3, g + 2.3, g + 3.0, 4.0, 1.7, ang, dark))
         P += horse_at(hx_, hz_, g + 3.0, ang, 1.05, sand, dark)
-    P.append(box_at(cx, cz, g + 2.3, g + 4.7, 4.6, 4.6, 0, dark))                               # zócalo de la torre
+    def pinnacle(px, pz, y0, h, w):                                                             # pináculo: fuste cuadrado, cornisilla y aguja corta con bola
+        P.append(box_at(px, pz, y0, y0 + h, w, w, 0, sand))
+        P.append(box_at(px, pz, y0 + h, y0 + h + 0.12, w * 1.5, w * 1.5, 0, light))
+        P.append(pyramid_at(px, pz, y0 + h + 0.12, w * 0.7, h * 0.9, dark))
+    P.append(box_at(cx, cz, g + 2.3, g + 4.4, 3.9, 3.9, 0, dark))                               # zócalo de la torre
     for sx in (-1, 1):
         for sz in (-1, 1):
-            P.append(box_at(cx + sx * 1.75, cz + sz * 1.75, g + 4.7, g + 6.2, 0.55, 0.55, 0, light))   # pilastras de esquina
-    P.append(box_at(cx, cz, g + 4.7, g + 8.8, 2.9, 2.9, 0, sand))                               # primer cuerpo
-    P.append(box_at(cx, cz, g + 8.8, g + 9.2, 3.3, 3.3, 0, light))                              # cornisa
-    P.append(box_at(cx, cz, g + 9.2, g + 15.0, 2.0, 2.0, 0, sand))                              # fuste
+            pinnacle(cx + sx * 1.55, cz + sz * 1.55, g + 4.4, 1.0, 0.42)                         # pináculos sobre el zócalo
+    P.append(box_at(cx, cz, g + 4.4, g + 8.6, 2.5, 2.5, 0, sand))                               # primer cuerpo
+    P.append(box_at(cx, cz, g + 8.6, g + 9.0, 3.0, 3.0, 0, light))                              # primera cornisa
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            pinnacle(cx + sx * 1.25, cz + sz * 1.25, g + 9.0, 1.3, 0.38)                         # pináculos de la primera cornisa
+    P.append(box_at(cx, cz, g + 9.0, g + 16.6, 1.65, 1.65, 0, sand))                            # fuste esbelto
     for ang in (0, math.pi / 2):                                                                # figura en relieve en las cuatro caras
-        P.append(box_at(cx, cz, g + 10.2, g + 13.4, 0.75, 2.1, ang, light))
-        P.append(box_at(cx, cz, g + 13.4, g + 14.0, 0.55, 2.12, ang, dark))
-    P.append(box_at(cx, cz, g + 15.0, g + 15.5, 2.5, 2.5, 0, light))                            # cornisa superior
-    P.append(box_at(cx, cz, g + 15.5, g + 16.6, 1.5, 1.5, 0, sand))
-    P.append(pyramid_at(cx, cz, g + 16.6, 0.95, 3.6, dark))                                     # aguja
-    P.append(dome_at(cx, cz, g + 20.15, 0.28, 0.28, hexrgb(0xe9d9a8)))                          # remate
+        P.append(box_at(cx, cz, g + 10.3, g + 14.2, 0.6, 1.8, ang, light))
+        P.append(box_at(cx, cz, g + 14.2, g + 14.9, 0.46, 1.82, ang, dark))                     # dosel sobre la figura
+        P.append(box_at(cx, cz, g + 9.6, g + 10.3, 0.4, 1.72, ang, dark))                       # peana de la figura
+    P.append(box_at(cx, cz, g + 16.6, g + 17.1, 2.2, 2.2, 0, light))                            # cornisa superior
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            pinnacle(cx + sx * 0.9, cz + sz * 0.9, g + 17.1, 0.9, 0.3)                           # pináculos de la cornisa superior
+    P.append(box_at(cx, cz, g + 17.1, g + 19.6, 1.15, 1.15, 0, sand))                           # linterna
+    P.append(box_at(cx, cz, g + 19.6, g + 19.9, 1.5, 1.5, 0, light))
+    P.append(pyramid_at(cx, cz, g + 19.9, 0.62, 5.0, dark))                                     # aguja
+    P.append(dome_at(cx, cz, g + 24.8, 0.26, 0.26, hexrgb(0xe9d9a8)))                           # remate
     return P
 
 
