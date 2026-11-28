@@ -64,6 +64,19 @@ for tx, tz in tiles():
         w = float(str(t.get("width", "0")).split()[0]) if str(t.get("width", "")).replace(".", "").isdigit() else 0.0
         if not w: w = max(ROAD_W[t["highway"]], int(t["lanes"]) * 3.2 if str(t.get("lanes", "")).isdigit() else 0)
         ways[e["id"]] = (w, [((p["lon"] - LNG0) * KLNG, -(p["lat"] - LAT0) * KLAT) for p in e["geometry"]])
+# --- vía del TRAM en superficie (public/world/tram.json, tools/pbf_tram.py): el terreno bajo los raíles se aplana como el de una calle ---
+TRAM = "public/world/tram.json"
+if os.path.exists(TRAM):
+    for ci, ch in enumerate(json.load(open(TRAM, encoding="utf-8"))["chains"]):
+        run, k = [], 0
+        for i, f in enumerate(ch["t"]):                          # el tramo i va de p[i] a p[i+1]; solo los de superficie
+            if not f:
+                if not run: run = [tuple(ch["p"][i])]
+                run.append(tuple(ch["p"][i + 1]))
+            elif run:
+                if len(run) >= 2: ways[f"tram{ci}_{k}"] = (4.6, run); k += 1
+                run = []
+        if len(run) >= 2: ways[f"tram{ci}_{k}"] = (4.6, run)
 print(len(ways), "vías", flush=True)
 
 S = np.zeros_like(base); Wsum = np.zeros_like(base); Wmax = np.zeros_like(base)
