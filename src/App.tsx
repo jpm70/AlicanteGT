@@ -431,7 +431,7 @@ export default function App() {
 
       if (ph !== 'menu') {                                  // en el menú el coche queda congelado
         stepCarPhysics(state, input, dt);
-        const impact = Math.max(world.collision?.resolve(state) ?? 0, world.traffic.collide(state));
+        const impact = Math.max(world.collision?.resolve(state) ?? 0, world.traffic.collide(state), world.trams.collide(state));
         const hard = impact > 0.25 && Math.abs(state.speedMps) > 4;
         if (hard) {
           const force = impact * Math.min(Math.abs(state.speedMps) / 25, 1);

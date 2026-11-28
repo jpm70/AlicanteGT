@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { heightAt } from './geo';
+import { heightAt, toLatLng, toLocal } from './geo';
+import type { CarState } from '../types/game';
 
 /** Datos del TRAM de Alicante (public/world/tram.json, tools/pbf_tram.py): cadenas de vía, con el tramo en túnel marcado, y paradas. */
 export interface TramData { chains: { p: [number, number][]; t: number[] }[]; stops: [number, number, string][] }
@@ -212,6 +213,12 @@ export class Trams {
       if (nextStop >= 0 && dStop < 4 && t.v < 0.8) { t.hold = 12; t.lastStop = nextStop; }
       const toEnd = t.dir > 0 ? t.chain.len - t.s : t.s;
       if (toEnd < 40) target = Math.min(target, Math.max(0, toEnd - 4) * 0.5);
+      // el coche del jugador sobre la vía, por delante: frena para no arrollarlo (y se queda parado mientras siga ahí)
+      {
+        const fx = head.tx * t.dir, fz = head.tz * t.dir;
+        const rx = px - head.x, rz = pz - head.z, ahead = rx * fx + rz * fz, side = Math.abs(rx * -fz + rz * fx);
+        if (ahead > 0 && ahead < 100 && side < 2.9) target = Math.min(target, Math.sqrt(2 * 1.1 * Math.max(0, ahead - 10)));   // frenada cómoda (1,1 m/s²) hasta quedar a 10 m
+      }
       if (t.hold > 0) { t.hold -= dt; target = 0; }
       if (toEnd < 4.5 && t.v < 0.8) { t.dir = (t.dir * -1) as 1 | -1; t.hold = 10; t.lastStop = -1; }
       t.v += Math.max(-1.3 * dt, Math.min(0.9 * dt, target - t.v));
@@ -236,6 +243,39 @@ export class Trams {
     }
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Choque del coche del jugador con los coches del tranvía: lo empuja fuera y le quita velocidad si va contra él. Devuelve el impacto [0..1]. */
+  collide(state: CarState): number {
+    if (!this.enabled || !this.trams.length) return 0;
+    const l = toLocal(state.lat, state.lng);
+    const h = (state.headingDeg * Math.PI) / 180;
+    const pfx = Math.sin(h), pfz = -Math.cos(h);
+    let cx = l.x, cz = l.z, impact = 0;
+    for (const t of this.trams) {
+      for (let k = 0; k < CARS; k++) {
+        const s = t.s - t.dir * (k * (CAR_LEN + GAP) + CAR_LEN / 2);
+        if (s < 0 || s > t.chain.len) continue;
+        const q = this.sample(t.chain, s);
+        if (q.tun || Math.abs(q.x - cx) > CAR_LEN || Math.abs(q.z - cz) > CAR_LEN) continue;
+        const fx = q.tx * t.dir, fz = q.tz * t.dir;
+        for (const po of [-1.7, 0, 1.7]) for (const to of [-4.6, -1.5, 1.5, 4.6]) {
+          const ax = cx + pfx * po, az = cz + pfz * po, bx = q.x + fx * to, bz = q.z + fz * to;
+          const dx = ax - bx, dz = az - bz, d = Math.hypot(dx, dz), min = 1.4 + 1.05;
+          if (d < min && d > 1e-4) {
+            cx += (dx / d) * (min - d) * 0.7; cz += (dz / d) * (min - d) * 0.7;
+            const toward = state.speedMps * (pfx * (-dx / d) + pfz * (-dz / d));            // solo es golpe si el coche va contra el tranvía
+            if (toward > 0.3) impact = Math.max(impact, Math.min(1, (Math.abs(state.speedMps) + t.v) / 14));
+          }
+        }
+      }
+    }
+    if (cx !== l.x || cz !== l.z) {
+      const ll = toLatLng(cx, cz);
+      state.lat = ll.lat; state.lng = ll.lng;
+      if (impact > 0.05) state.speedMps *= 1 - Math.min(0.8, impact * 0.9);
+    }
+    return impact;
   }
 
   dispose() {
