@@ -221,8 +221,8 @@ function buildVariant(id: VariantId): VariantGeo {
   }
   if (sp.roofSign) trim.push(colorVerts(flatBox(0.55, 0.15, 0.24, 0, roofR[0][1] + 0.14, (sp.cab[3][1] + sp.cab[3][2]) / 2), [0.98, 0.92, 0.55]));
   if (sp.bus) {
-    // librea de Alicante: cuerpo blanco (la «pintura» se tiñe de blanco) con frontal, zaga, zócalo y bandas de puertas en rojo
-    const RED = [0.77, 0.15, 0.18], GREYB = [0.18, 0.19, 0.21];
+    // librea de Alicante (rojo intenso: los colores de vértice son lineales, por eso el valor es tan bajo): cuerpo blanco (la «pintura» se tiñe de blanco) con frontal, zaga, zócalo y bandas de puertas en rojo
+    const RED = [0.72, 0.005, 0.012], GREYB = [0.18, 0.19, 0.21];
     const hw = sp.hwMid + 0.012;
     for (const sx of [-1, 1]) {
       for (const [z0, z1] of [[3.4, 8.8], [-8.8, -5.6]]) trim.push(colorVerts(flatBox(0.03, 0.62, z1 - z0, sx * hw, 0.74, (z0 + z1) / 2), RED));      // zócalo rojo delante y detrás
