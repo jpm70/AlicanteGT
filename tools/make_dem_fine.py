@@ -81,16 +81,46 @@ print(len(ways), "vías", flush=True)
 
 S = np.zeros_like(base); Wsum = np.zeros_like(base); Wmax = np.zeros_like(base)
 nx_, nz_ = base.shape[1], base.shape[0]
+def smooth_axis(h, k):
+    if len(h) <= 2 or k <= 0: return h
+    hp = np.pad(h, k, mode="edge"); ker = np.ones(2 * k + 1) / (2 * k + 1)
+    return np.convolve(hp, ker, mode="valid")
+
+
+profiles = []                                          # (ancho, px, pz, h) de cada vía
 for wid, (w, pts) in ways.items():
     P = np.array(pts); seg = np.hypot(*np.diff(P, axis=0).T); cum = np.concatenate([[0], np.cumsum(seg)]); L = cum[-1]
     if L < 4: continue
     n = max(2, int(L / 4.0) + 1); s = np.linspace(0, L, n)
     px = np.interp(s, cum, P[:, 0]); pz = np.interp(s, cum, P[:, 1])
-    h = sample(px, pz, HR)
-    k = 15  # suavizado a lo largo del eje (±60 m): quita las ondas del DEM (edificios y arbolado) y deja pendientes suaves
-    if n > 2:
-        hp = np.pad(h, k, mode="edge"); ker = np.ones(2 * k + 1) / (2 * k + 1)
-        h = np.convolve(hp, ker, mode="valid")
+    h = smooth_axis(sample(px, pz, HR), 15)  # suavizado a lo largo del eje (±60 m): quita las ondas del DEM (edificios y arbolado) y deja pendientes suaves
+    profiles.append([w, px, pz, h])
+
+# --- calzadas paralelas y cruces a una misma cota ---
+# Dos calzadas de una avenida (o una calle que cruza otra) cada una aplanada a su propia cota en una ladera quedan a alturas distintas
+# y la avenida sale con una caída transversal y rampas entre ellas. Se acercan las cotas de los ejes que están a menos de 22 m (solo si difieren < 1,6 m).
+_X = np.concatenate([q[1] for q in profiles]); _Z = np.concatenate([q[2] for q in profiles]); _H = np.concatenate([q[3] for q in profiles])
+_W = np.concatenate([np.full(len(q[1]), i) for i, q in enumerate(profiles)])
+_cells = {}
+for idx, (cx_, cz_) in enumerate(zip(np.floor(_X / 24.0).astype(int), np.floor(_Z / 24.0).astype(int))): _cells.setdefault((cx_, cz_), []).append(idx)
+_cells = {k: np.array(v) for k, v in _cells.items()}
+for _it in range(3):
+    Hn = _H.copy()
+    for (a_, b_), idx in _cells.items():
+        nb = [_cells[(a_ + i_, b_ + j_)] for i_ in (-1, 0, 1) for j_ in (-1, 0, 1) if (a_ + i_, b_ + j_) in _cells]
+        nb = np.concatenate(nb)
+        d = np.hypot(_X[idx, None] - _X[None, nb], _Z[idx, None] - _Z[None, nb])
+        dh = _H[None, nb] - _H[idx, None]
+        wgt = (1.0 / (1.0 + (d / 14.0) ** 2)) * (d < 22.0) * (_W[idx, None] != _W[None, nb]) * (np.abs(dh) < 2.4)
+        den = wgt.sum(1); num = (wgt * dh).sum(1)
+        Hn[idx] = _H[idx] + num / (1.0 + den)
+    _H = Hn
+    o = 0
+    for q in profiles:                                   # tras acercarlas, se vuelve a suavizar cada eje (sin escalones)
+        m_ = len(q[1]); q[3] = smooth_axis(_H[o:o + m_], 4); _H[o:o + m_] = q[3]; o += m_
+print("calzadas paralelas unificadas:", len(profiles), "ejes", flush=True)
+
+for w, px, pz, h in profiles:
     hw = w / 2 + 12.0                                  # calzada + acera + una celda entera: ningún nodo que influya en la calzada queda a medias (ondulaciones)
     for off_x in range(-3, 4):
         for off_z in range(-3, 4):
@@ -101,7 +131,7 @@ for wid, (w, pts) in ways.items():
             wt = np.clip(1.0 - (dist - hw) / 12.0, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt)
             m = wt > 0
             # la cota de cada nodo la manda sobre todo SU calle: el peso cae con la distancia al eje (si no, una calle paralela a 15 m le mete su cota y la calzada ondula)
-            near = wt[m] / (1.0 + (dist[m] / 3.5) ** 2)
+            near = wt[m] / (1.0 + (dist[m] / 3.0) ** 4)
             np.add.at(S, (iz[m], ix[m]), near * hh[m]); np.add.at(Wsum, (iz[m], ix[m]), near); np.maximum.at(Wmax, (iz[m], ix[m]), wt[m])
 tgt = np.where(Wsum > 0, S / np.maximum(Wsum, 1e-9), base)
 out = base * (1 - Wmax) + tgt * Wmax
@@ -155,6 +185,8 @@ for pid, pg, forced in areas:
         target = float(np.median(vals)) if not forced else float(np.percentile(vals, 20))
     wt = np.clip(1.0 - np.maximum(dist - FLAT, 0.0) / BAND, 0.0, 1.0); wt = wt * wt * (3 - 2 * wt); wt[inside] = 1.0
     if FLAT > 0: wt[(dist > 0) & (sub <= 1.2)] = 0.0                    # el mar y la orilla baja no se levantan
+    if not forced:                                                      # una plaza no inclina la calzada que la bordea: los nodos de calle conservan su cota
+        wt = np.where(inside, wt, wt * (1.0 - np.clip(Wmax[j0:j1 + 1, i0:i1 + 1], 0.0, 1.0)))
     out[j0:j1 + 1, i0:i1 + 1] = sub * (1 - wt) + target * wt; nplz += 1
 print(nplz, "plazas aplanadas", flush=True)
 print("nodos aplanados:", int((Wmax > 0.5).sum()), "de", out.size, "; cambio máx", float(np.abs(out - base).max()), "m", flush=True)
