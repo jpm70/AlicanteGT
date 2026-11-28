@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { heightAt } from './geo';
+import { heightAt, toLatLng, toLocal } from './geo';
+import type { CarState } from '../types/game';
 
 /** Datos del TRAM de Alicante (public/world/tram.json, tools/pbf_tram.py): cadenas de vía, con el tramo en túnel marcado, y paradas. */
 export interface TramData { chains: { p: [number, number][]; t: number[] }[]; stops: [number, number, string][] }
@@ -19,6 +20,26 @@ function colorize(g: THREE.BufferGeometry, hex: number): THREE.BufferGeometry {
   for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
   ng.setAttribute('color', new THREE.BufferAttribute(col, 3));
   return ng;
+}
+
+/** Logotipo del costado («T TRAM» en naranja con «FGV» debajo) como textura con transparencia. */
+function createLogoTexture(): THREE.CanvasTexture {
+  const cv = document.createElement('canvas');
+  cv.width = 512; cv.height = 192;
+  const c = cv.getContext('2d')!;
+  c.clearRect(0, 0, 512, 192);
+  c.fillStyle = '#f0721c';
+  c.beginPath(); c.roundRect(10, 18, 96, 96, 14); c.fill();                       // cuadrado del logo con la «T»
+  c.fillStyle = '#fff'; c.fillRect(30, 34, 56, 18); c.fillRect(49, 34, 18, 62);
+  c.fillStyle = '#f0721c'; c.font = 'italic 800 108px "Arial Black", Arial, sans-serif'; c.textBaseline = 'alphabetic';
+  c.fillText('TRAM', 128, 106);
+  c.fillStyle = '#4a4d52'; c.font = 'bold 40px Arial, sans-serif';
+  c.fillText('FGV', 18, 170);
+  c.fillStyle = '#6b6f75'; c.font = '600 30px Arial, sans-serif';
+  c.fillText('Alicante · Alacant', 128, 170);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
 }
 
 /** Un coche del TRAM (mira a +Z): caja blanca con franja azul, banda de ventanillas, testeros con parabrisas y pantógrafo. */
@@ -43,10 +64,7 @@ function buildCarGeometry(): THREE.BufferGeometry {
     box(0.18, 0.5, 0.9, 1.34, 0.62, s * (CAR_LEN / 2 - 1.1), 0x33383c);     // bogie visible bajo el faldón
     box(0.18, 0.5, 0.9, -1.34, 0.62, s * (CAR_LEN / 2 - 1.1), 0x33383c);
   }
-  box(0.04, 0.4, 1.6, 1.33, 1.2, 1.4, 0xfafafa);                      // logotipo «TRAM» (bloque blanco y naranja)
-  box(0.04, 0.1, 1.6, 1.33, 1.0, 1.4, 0xf0721c);
-  box(0.04, 0.4, 1.6, -1.33, 1.2, 1.4, 0xfafafa);
-  box(0.04, 0.1, 1.6, -1.33, 1.0, 1.4, 0xf0721c);
+
   box(1.5, 0.08, 1.2, 0, 3.0, 2.2, 0x44484c);                         // pantógrafo
   box(0.08, 0.3, 0.08, 0.5, 2.92, 2.2, 0x44484c);
   box(0.08, 0.3, 0.08, -0.5, 2.92, 2.2, 0x44484c);
@@ -59,6 +77,7 @@ export class Trams {
   private stops: [number, number, string][] = [];
   private trams: Tram[] = [];
   private mesh: THREE.InstancedMesh;
+  private decal: THREE.InstancedMesh;
   private track: THREE.Mesh | null = null;
   private tmpM = new THREE.Matrix4();
   private tmpQ = new THREE.Quaternion();
@@ -75,6 +94,12 @@ export class Trams {
     this.mesh.count = 0;
     this.mesh.castShadow = true;
     scene.add(this.mesh);
+    // rótulo «TRAM» en los dos costados de cada coche (dos planos fusionados que comparten la matriz del coche)
+    const side = (sx: number) => new THREE.PlaneGeometry(1.5, 0.56).rotateY(sx * Math.PI / 2).translate(sx * 1.372, 1.38, 1.85);
+    this.decal = new THREE.InstancedMesh(mergeGeometries([side(1), side(-1)], false)!, new THREE.MeshBasicMaterial({ map: createLogoTexture(), transparent: true, alphaTest: 0.4, toneMapped: false }), MAX_TRAMS * CARS);
+    this.decal.frustumCulled = false;
+    this.decal.count = 0;
+    scene.add(this.decal);
   }
 
   setData(d: TramData) {
@@ -193,7 +218,7 @@ export class Trams {
   }
 
   update(dt: number, px: number, pz: number) {
-    if (!this.enabled || !this.chains.length) { this.mesh.count = 0; if (this.track) this.track.visible = !!this.chains.length; return; }
+    if (!this.enabled || !this.chains.length) { this.mesh.count = 0; this.decal.count = 0; if (this.track) this.track.visible = !!this.chains.length; return; }
     if (this.track) this.track.visible = true;
     this.timer += dt;
     if (this.timer > 3 && this.trams.length < MAX_TRAMS) { this.timer = 0; this.spawn(px, pz); }
@@ -212,6 +237,12 @@ export class Trams {
       if (nextStop >= 0 && dStop < 4 && t.v < 0.8) { t.hold = 12; t.lastStop = nextStop; }
       const toEnd = t.dir > 0 ? t.chain.len - t.s : t.s;
       if (toEnd < 40) target = Math.min(target, Math.max(0, toEnd - 4) * 0.5);
+      // el coche del jugador sobre la vía, por delante: frena para no arrollarlo (y se queda parado mientras siga ahí)
+      {
+        const fx = head.tx * t.dir, fz = head.tz * t.dir;
+        const rx = px - head.x, rz = pz - head.z, ahead = rx * fx + rz * fz, side = Math.abs(rx * -fz + rz * fx);
+        if (ahead > 0 && ahead < 100 && side < 2.9) target = Math.min(target, Math.sqrt(2 * 1.1 * Math.max(0, ahead - 10)));   // frenada cómoda (1,1 m/s²) hasta quedar a 10 m
+      }
       if (t.hold > 0) { t.hold -= dt; target = 0; }
       if (toEnd < 4.5 && t.v < 0.8) { t.dir = (t.dir * -1) as 1 | -1; t.hold = 10; t.lastStop = -1; }
       t.v += Math.max(-1.3 * dt, Math.min(0.9 * dt, target - t.v));
@@ -225,22 +256,56 @@ export class Trams {
         const s = t.s - t.dir * (k * (CAR_LEN + GAP) + CAR_LEN / 2);
         const out = s < 0 || s > t.chain.len;
         const q = this.sample(t.chain, Math.max(0, Math.min(t.chain.len, s)));
-        if (out || q.tun) { this.mesh.setMatrixAt(n++, this.zero); continue; }   // bajo tierra: no se ve
+        if (out || q.tun) { this.mesh.setMatrixAt(n, this.zero); this.decal.setMatrixAt(n, this.zero); n++; continue; }   // bajo tierra: no se ve
         const fx = q.tx * t.dir, fz = q.tz * t.dir;
         const yf = heightAt(q.x + fx * 4, q.z + fz * 4), yb = heightAt(q.x - fx * 4, q.z - fz * 4);
         this.tmpE.set(-Math.atan2(yf - yb, 8), Math.atan2(fx, fz), 0);
         this.tmpQ.setFromEuler(this.tmpE);
         this.tmpM.compose(this.tmpV.set(q.x, heightAt(q.x, q.z) + 0.12, q.z), this.tmpQ, new THREE.Vector3(1, 1, 1));
-        this.mesh.setMatrixAt(n++, this.tmpM);
+        this.mesh.setMatrixAt(n, this.tmpM); this.decal.setMatrixAt(n, this.tmpM); n++;
       }
     }
-    this.mesh.count = n;
-    this.mesh.instanceMatrix.needsUpdate = true;
+    this.mesh.count = n; this.decal.count = n;
+    this.mesh.instanceMatrix.needsUpdate = true; this.decal.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Choque del coche del jugador con los coches del tranvía: lo empuja fuera y le quita velocidad si va contra él. Devuelve el impacto [0..1]. */
+  collide(state: CarState): number {
+    if (!this.enabled || !this.trams.length) return 0;
+    const l = toLocal(state.lat, state.lng);
+    const h = (state.headingDeg * Math.PI) / 180;
+    const pfx = Math.sin(h), pfz = -Math.cos(h);
+    let cx = l.x, cz = l.z, impact = 0;
+    for (const t of this.trams) {
+      for (let k = 0; k < CARS; k++) {
+        const s = t.s - t.dir * (k * (CAR_LEN + GAP) + CAR_LEN / 2);
+        if (s < 0 || s > t.chain.len) continue;
+        const q = this.sample(t.chain, s);
+        if (q.tun || Math.abs(q.x - cx) > CAR_LEN || Math.abs(q.z - cz) > CAR_LEN) continue;
+        const fx = q.tx * t.dir, fz = q.tz * t.dir;
+        for (const po of [-1.7, 0, 1.7]) for (const to of [-4.6, -1.5, 1.5, 4.6]) {
+          const ax = cx + pfx * po, az = cz + pfz * po, bx = q.x + fx * to, bz = q.z + fz * to;
+          const dx = ax - bx, dz = az - bz, d = Math.hypot(dx, dz), min = 1.4 + 1.05;
+          if (d < min && d > 1e-4) {
+            cx += (dx / d) * (min - d) * 0.7; cz += (dz / d) * (min - d) * 0.7;
+            const toward = state.speedMps * (pfx * (-dx / d) + pfz * (-dz / d));            // solo es golpe si el coche va contra el tranvía
+            if (toward > 0.3) impact = Math.max(impact, Math.min(1, (Math.abs(state.speedMps) + t.v) / 14));
+          }
+        }
+      }
+    }
+    if (cx !== l.x || cz !== l.z) {
+      const ll = toLatLng(cx, cz);
+      state.lat = ll.lat; state.lng = ll.lng;
+      if (impact > 0.05) state.speedMps *= 1 - Math.min(0.8, impact * 0.9);
+    }
+    return impact;
   }
 
   dispose() {
-    this.scene.remove(this.mesh);
+    this.scene.remove(this.mesh, this.decal);
     this.mesh.geometry.dispose(); (this.mesh.material as THREE.Material).dispose();
+    this.decal.geometry.dispose(); (this.decal.material as THREE.Material).dispose();
     if (this.track) { this.scene.remove(this.track); this.track.geometry.dispose(); (this.track.material as THREE.Material).dispose(); }
   }
 }

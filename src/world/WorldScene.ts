@@ -462,8 +462,59 @@ export class WorldScene {
     }
   }
 
+  private tunnelSignTex: THREE.CanvasTexture | null = null;
+
+  /** Señal azul de «TÚNEL» (arco blanco sobre calzada con línea central y rótulo). */
+  private tunnelSignTexture(): THREE.CanvasTexture {
+    if (this.tunnelSignTex) return this.tunnelSignTex;
+    const cv = document.createElement('canvas');
+    cv.width = 256; cv.height = 256;
+    const c = cv.getContext('2d')!;
+    c.fillStyle = '#ffffff'; c.beginPath(); c.roundRect(0, 0, 256, 256, 18); c.fill();
+    c.fillStyle = '#0b4fa8'; c.beginPath(); c.roundRect(9, 9, 238, 238, 12); c.fill();
+    c.fillStyle = '#fff'; c.beginPath(); c.moveTo(48, 168); c.lineTo(48, 100); c.arc(128, 100, 80, Math.PI, 0); c.lineTo(208, 168); c.closePath(); c.fill();   // arco del túnel
+    c.fillStyle = '#16181c'; c.beginPath(); c.moveTo(74, 168); c.lineTo(74, 100); c.arc(128, 100, 54, Math.PI, 0); c.lineTo(182, 168); c.closePath(); c.fill();  // boca oscura
+    c.fillStyle = '#fff'; c.beginPath(); c.moveTo(114, 168); c.lineTo(128, 120); c.lineTo(142, 168); c.closePath(); c.fill();                                  // calzada en perspectiva
+    c.fillStyle = '#fff'; c.font = 'bold 50px "Arial Narrow", Arial, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText('TÚNEL', 128, 213);
+    const t = new THREE.CanvasTexture(cv);
+    t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+    return (this.tunnelSignTex = t);
+  }
+
+  /** Señales de túnel en las bocas de las vías subterráneas de la tesela: poste con señal azul a la derecha de la calzada, 8 m antes de la boca y mirando al tráfico que llega. */
+  private addTunnelSigns(key: string, decks: { w: number; p: [number, number, number][] }[]) {
+    const lt = this.tiles.get(key);
+    if (!lt) return;
+    const placed: [number, number][] = [];
+    const tex = this.tunnelSignTexture();
+    const panelMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.5, metalness: 0.1, side: THREE.DoubleSide });
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x5b5f66, roughness: 0.6, metalness: 0.4 });
+    lt.materials.push(panelMat, poleMat);
+    for (const d of decks) {
+      if (d.p.length < 3 || d.w <= 5 || Math.min(...d.p.map((q) => q[2])) > -1.5) continue;          // solo túneles de calzada (no rampas de garaje)
+      for (const [i0, i1] of [[0, 1], [d.p.length - 1, d.p.length - 2]] as [number, number][]) {
+        const [mx, mz, mo] = d.p[i0], [nx, nz] = d.p[i1];
+        if (Math.abs(mo) > 0.6) continue;                                                               // el extremo no sale a la superficie
+        let tx = nx - mx, tz = nz - mz; const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;          // hacia dentro del túnel
+        const rx = -tz, rz = tx;                                                                        // derecha de quien entra (x este, z sur)
+        const sx = mx - tx * 8 + rx * (d.w / 2 + 1.4), sz = mz - tz * 8 + rz * (d.w / 2 + 1.4);
+        if (placed.some(([a, b]) => Math.hypot(a - sx, b - sz) < 12)) continue;                         // dos carriles de una misma boca: una sola señal
+        placed.push([sx, sz]);
+        const y = heightAt(sx, sz);
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 2.6, 6), poleMat);
+        pole.position.set(sx, y + 1.3, sz);
+        const panel = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 1.15), panelMat);
+        panel.position.set(sx, y + 3.05, sz);
+        panel.rotation.y = Math.atan2(-tx, -tz);                                                        // la cara mira al tráfico que se acerca (contra el sentido de entrada)
+        lt.group.add(pole, panel);
+      }
+    }
+  }
+
   /** Puentes y túneles: segmentos con su altura relativa al terreno, indexados en celdas de 30 m. */
   private registerDecks(key: string, decks: { w: number; p: [number, number, number][] }[]) {
+    this.addTunnelSigns(key, decks);
     const C = 30;
     for (const d of decks) {
       if (d.w <= 5 && d.p.some((q) => q[2] < -0.5)) continue;   // rampas de garaje/parking: el coche no baja por ellas

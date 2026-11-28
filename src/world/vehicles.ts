@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-import { createSignAtlas, SIGN_COLS } from './busSigns';
+import { buildSignCells, CELL_LOGO, CELL_STAR, CELL_WHEEL, createSignAtlas, SIGN_COLS, type CellSpec } from './busSigns';
 export type VariantId = 'sedan' | 'hatch' | 'suv' | 'van' | 'taxi' | 'bus' | 'police' | 'ambulance' | 'fire';
 export const VARIANT_IDS: VariantId[] = ['sedan', 'hatch', 'suv', 'van', 'taxi', 'bus', 'police', 'ambulance', 'fire'];
 /** Variantes que circulan (las de emergencia solo se aparcan junto a sus edificios). */
@@ -156,6 +156,34 @@ interface VariantGeo {
  * ruedas con llanta y pasos de rueda, juntas de puertas, pilar B, parachoques, faros, pilotos, retrovisores y matrículas.
  * Devuelve cuatro mallas: pintura (se tiñe), accesorios, cristal y luces.
  */
+/** Plano con textura de una celda del atlas: `sel` = celda fija (>= 0) o -1 rótulo de línea, -2 número de línea, -3 matrícula; u0..u1 = franja de la celda. */
+function atlasPlane(w: number, h: number, u0: number, u1: number, sel: number, place: (g: THREE.BufferGeometry) => void): THREE.BufferGeometry {
+  const g = new THREE.PlaneGeometry(w, h);
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setX(i, u0 + uv.getX(i) * (u1 - u0));
+  g.setAttribute('aSel', new THREE.BufferAttribute(new Float32Array(4).fill(sel), 1));
+  place(g);
+  return g;
+}
+
+/** Planos con texto del autobús: rótulo de destino y número (frontal, lateral y trasero), matrículas, logotipos SubÚs, accesibilidad y estrella. */
+function buildBusPlanes(sp: Spec): THREE.BufferGeometry {
+  const P: THREE.BufferGeometry[] = [];
+  const hw = sp.hwMid + 0.034, F = sp.front, R = sp.rear;
+  P.push(atlasPlane(1.52, 0.24, 0, 1, -1, (g) => g.translate(0, 2.62, F + 0.062)));                                   // rótulo de destino
+  P.push(atlasPlane(0.46, 0.105, 0.25, 0.75, -3, (g) => g.translate(0, 0.62, F + 0.075)));                           // matrícula delantera
+  P.push(atlasPlane(0.3, 0.3, 0.4375, 0.5625, CELL_STAR, (g) => g.translate(0, 1.22, F + 0.078)));                   // estrella
+  P.push(atlasPlane(0.9, 0.2, 0.3, 0.7, -2, (g) => g.rotateY(Math.PI).translate(0, 2.52, R - 0.045)));                // número trasero
+  P.push(atlasPlane(0.46, 0.105, 0.25, 0.75, -3, (g) => g.rotateY(Math.PI).translate(0, 0.72, R - 0.082)));           // matrícula trasera
+  for (const sx of [1, -1]) {
+    const ry = sx * Math.PI / 2;
+    P.push(atlasPlane(0.95, 0.22, 0.3, 0.7, -2, (g) => g.rotateY(ry).translate(sx * hw, 2.28, F - 1.0)));             // número en el lateral (junto al parabrisas)
+    P.push(atlasPlane(1.9, 0.38, 0.25, 0.75, CELL_LOGO, (g) => g.rotateY(ry).translate(sx * hw, 0.84, -2.4)));        // logotipo SubÚs en el cuerpo
+  }
+  P.push(atlasPlane(0.3, 0.3, 0.4375, 0.5625, CELL_WHEEL, (g) => g.rotateY(Math.PI / 2).translate(hw, 1.1, 5.9)));    // accesibilidad junto a la puerta delantera
+  return mergeGeometries(P, false)!;
+}
+
 function buildVariant(id: VariantId): VariantGeo {
   const sp = SPECS[id];
   const paint: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [], glass: THREE.BufferGeometry[] = [], lights: THREE.BufferGeometry[] = [], tail: THREE.BufferGeometry[] = [], sigL: THREE.BufferGeometry[] = [], sigR: THREE.BufferGeometry[] = [];
@@ -187,8 +215,10 @@ function buildVariant(id: VariantId): VariantGeo {
     for (const dz of sp.doors) trim.push(colorVerts(flatBox(0.02, sp.bus ? 1.6 : 0.6, 0.025, sx * x0, sp.bus ? 1.3 : 0.64, dz), [0.07, 0.07, 0.08]));   // junta de puerta
     if (!sp.bus) trim.push(colorVerts(flatBox(0.03, 0.44, 0.08, sx * (sp.cab[1][3] + 0.01), sp.cab[1][0] + 0.02, (sp.cab[1][1] + sp.cab[1][2]) / 2 - 0.1), dark));       // pilar B
   }
-  trim.push(colorVerts(flatBox(0.46, 0.11, 0.03, 0, sp.plateY, sp.rear - 0.005), [0.93, 0.93, 0.9]));         // matrícula trasera
-  trim.push(colorVerts(flatBox(0.46, 0.11, 0.03, 0, sp.bus ? 0.55 : 0.46, sp.front + 0.02), [0.93, 0.93, 0.9])); // matrícula delantera
+  if (!sp.bus) {
+    trim.push(colorVerts(flatBox(0.46, 0.11, 0.03, 0, sp.plateY, sp.rear - 0.005), [0.93, 0.93, 0.9]));         // matrícula trasera
+    trim.push(colorVerts(flatBox(0.46, 0.11, 0.03, 0, 0.46, sp.front + 0.02), [0.93, 0.93, 0.9])); // matrícula delantera
+  }
   if (sp.roofSign) trim.push(colorVerts(flatBox(0.55, 0.15, 0.24, 0, roofR[0][1] + 0.14, (sp.cab[3][1] + sp.cab[3][2]) / 2), [0.98, 0.92, 0.55]));
   if (sp.bus) {
     // librea de Alicante: cuerpo blanco (la «pintura» se tiñe de blanco) con frontal, zaga, zócalo y bandas de puertas en rojo
@@ -231,7 +261,7 @@ function buildVariant(id: VariantId): VariantGeo {
     paint: mergeGeometries(paint, false)!, trim: mergeGeometries(trim, false)!,
     glass: mergeGeometries(glass, false)!, lights: mergeGeometries(lights, false)!, tail: mergeGeometries(tail, false)!,
     sigL: mergeGeometries(sigL, false)!, sigR: mergeGeometries(sigR, false)!, lightsAll: mergeGeometries([...lights, ...tail], false)!,
-    sign: sp.bus ? new THREE.PlaneGeometry(1.52, 0.24).translate(0, 2.62, sp.front + 0.062) : null,
+    sign: sp.bus ? buildBusPlanes(sp) : null,
   };
 }
 
@@ -248,6 +278,7 @@ export class CarSet {
   /** rótulo LED de destino del autobús (celda del atlas por instancia) */
   readonly sign: THREE.InstancedMesh | null;
   private signCells: THREE.InstancedBufferAttribute | null = null;
+  private plateCells: THREE.InstancedBufferAttribute | null = null;
   private tmpC = new THREE.Color();
   constructor(g: VariantGeo, mats: { paint: THREE.Material; trim: THREE.Material; glass: THREE.Material; lights: THREE.Material; sign?: THREE.Material }, count: number, moving: boolean, shadow = true) {
     this.paint = new THREE.InstancedMesh(g.paint, mats.paint, count);
@@ -260,7 +291,9 @@ export class CarSet {
     if (g.sign && mats.sign) {
       const geo = g.sign.clone();
       this.signCells = new THREE.InstancedBufferAttribute(new Float32Array(count), 1);
+      this.plateCells = new THREE.InstancedBufferAttribute(new Float32Array(count), 1);
       geo.setAttribute('aCell', this.signCells);
+      geo.setAttribute('aPlate', this.plateCells);
       this.sign = new THREE.InstancedMesh(geo, mats.sign, count);
     } else this.sign = null;
     for (const m of this.all()) { m.frustumCulled = false; m.castShadow = shadow && !(m === this.lights || m === this.tail || m === this.sigL || m === this.sigR || m === this.sign); }
@@ -268,6 +301,8 @@ export class CarSet {
   private all(): THREE.InstancedMesh[] { return [this.paint, this.trim, this.glass, this.lights, ...(this.tail ? [this.tail, this.sigL!, this.sigR!] : []), ...(this.sign ? [this.sign] : [])]; }
   /** Celda del atlas de rótulos que muestra la instancia i (0 = fuera de servicio, 1 = ALICANTE, …). */
   setSign(i: number, cell: number) { if (this.signCells) this.signCells.setX(i, cell); }
+  /** Celda del atlas con la matrícula de la instancia i. */
+  setPlate(i: number, cell: number) { if (this.plateCells) this.plateCells.setX(i, cell); }
   /** tailK: brillo de los pilotos (1 normal, más al frenar); sigL/sigR: 1 = intermitente encendido. */
   set(i: number, m: THREE.Matrix4, color: THREE.Color, tailK = 1, sigL = 0, sigR = 0) {
     for (const x of this.all()) x.setMatrixAt(i, m);
@@ -284,6 +319,7 @@ export class CarSet {
     for (const m of this.all()) m.instanceMatrix.needsUpdate = true;
     for (const m of [this.paint, this.tail, this.sigL, this.sigR]) if (m?.instanceColor) m.instanceColor.needsUpdate = true;
     if (this.signCells) this.signCells.needsUpdate = true;
+    if (this.plateCells) this.plateCells.needsUpdate = true;
   }
   addTo(scene: THREE.Scene) { scene.add(...this.all()); }
   removeFrom(scene: THREE.Scene) { scene.remove(...this.all()); }
@@ -310,8 +346,8 @@ export class VehicleLib {
       sh.uniforms.uRows = this.signUniforms.uRows;
       sh.uniforms.uCols = this.signUniforms.uCols;
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float aCell; varying float vCell;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCell = aCell;');
+        .replace('#include <common>', '#include <common>\nattribute float aCell; attribute float aPlate; attribute float aSel; varying float vCell;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCell = aSel >= -0.5 ? aSel : (aSel > -1.5 ? aCell : (aSel > -2.5 ? aCell + 1.0 : aPlate));');
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', '#include <common>\nvarying float vCell; uniform float uRows; uniform float uCols;')
         .replace('#include <map_fragment>', `
@@ -320,12 +356,12 @@ export class VehicleLib {
           vec2 suv = vec2((sCol + vMapUv.x) / uCols, 1.0 - (sRow + (1.0 - vMapUv.y)) / uRows);
           diffuseColor *= texture2D(map, suv);`);
     };
-    this.setBusSigns(['FUERA DE SERVICIO', 'ALICANTE']);
+    this.setBusSigns([]);
   }
 
   /** (Re)genera el atlas de rótulos con los textos dados (celda 0 = fuera de servicio, 1 = sin línea). */
-  setBusSigns(texts: string[]) {
-    const { texture, rows } = createSignAtlas(texts);
+  setBusSigns(cells: CellSpec[]) {
+    const { texture, rows } = createSignAtlas(cells);
     this.mats.sign.map?.dispose();
     this.mats.sign.map = texture;
     this.mats.sign.needsUpdate = true;
