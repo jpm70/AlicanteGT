@@ -104,6 +104,32 @@ def fountain_at(cx, cz, g, R, sc, stone, water, bronze, star=True):
     return parts
 
 
+def horse_at(hx, hz, y, yaw, sc, body, dark):
+    """Caballo encabritado con volúmenes inclinados (marco local: +x adelante, +y arriba, +z lateral): grupa, cuello arqueado, cabeza, crin, orejas, cola,
+    patas traseras apoyadas y delanteras en alto con casco doblado."""
+    parts = []
+    def seg(c, ext, rz, col):                         # c = centro local, ext = (largo x, alto y, ancho z), rz = giro sobre z (rad)
+        b = trimesh.creation.box(extents=list(ext))
+        b.apply_transform(trimesh.transformations.rotation_matrix(rz, [0, 0, 1])); b.apply_translation(c)
+        b.apply_scale(sc); b.apply_transform(trimesh.transformations.rotation_matrix(yaw, [0, 1, 0])); b.apply_translation([hx, y, hz])
+        V = np.asarray(b.vertices); parts.append((V, np.asarray(b.faces), _vc(V, col)))
+    seg((-0.15, 1.75, 0), (2.0, 0.95, 0.85), 0.5, body)                 # tronco inclinado (cabeza arriba)
+    seg((0.55, 1.45, 0), (0.9, 0.9, 0.8), 0.5, body)                    # pecho
+    seg((0.95, 2.55, 0), (0.55, 1.35, 0.5), -0.55, body)                # cuello arqueado
+    seg((0.72, 2.7, 0), (0.16, 1.35, 0.3), -0.55, dark)                 # crin
+    seg((1.55, 3.2, 0), (0.95, 0.36, 0.36), -0.9, body)                 # cabeza (hocico hacia delante y abajo)
+    for zz in (-0.12, 0.12): seg((1.2, 3.55, zz), (0.1, 0.3, 0.1), -0.2, dark)   # orejas
+    seg((-1.35, 1.35, 0), (0.17, 1.3, 0.22), 0.55, dark)                # cola
+    for zz in (-0.28, 0.28):
+        seg((-0.75, 0.62, zz), (0.28, 1.25, 0.26), 0.12, body)          # patas traseras
+        seg((-0.78, 0.07, zz), (0.4, 0.14, 0.3), 0, dark)               # cascos
+    for zz in (-0.28, 0.28):
+        seg((1.1, 1.95, zz), (0.26, 0.95, 0.24), -1.0, body)            # brazo delantero levantado
+        seg((1.62, 1.72, zz), (0.22, 0.8, 0.22), 0.5, body)             # caña doblada
+        seg((1.72, 1.32, zz), (0.3, 0.14, 0.26), 0.3, dark)             # casco
+    return parts
+
+
 def luceros_at(cx, cz, g, R):
     """Fuente de la Plaza de los Luceros (Daniel Bañuls, 1930s): pila circular de arenisca con borde festoneado, cuerpo central escalonado,
     cuatro grupos de caballos y una torre estrecha y escalonada con figura en relieve y remate en punta (referencia: fotos aportadas por el usuario)."""
@@ -124,12 +150,8 @@ def luceros_at(cx, cz, g, R):
         hx_, hz_ = cx + ca * R * 0.46, cz + sa * R * 0.46                                      # peana
         ang = -(a + math.pi / 2)                                                                # el caballo mira en sentido tangente
         tx, tz = -sa, ca
-        P.append(box_at(hx_, hz_, g + 2.3, g + 3.0, 2.8, 1.5, ang, dark))
-        P.append(box_at(hx_, hz_, g + 3.0, g + 4.0, 2.3, 0.85, ang, sand))                     # cuerpo
-        P.append(box_at(hx_ + tx * 1.35, hz_ + tz * 1.35, g + 3.7, g + 5.1, 0.62, 0.62, ang, sand))   # cuello
-        P.append(box_at(hx_ + tx * 1.75, hz_ + tz * 1.75, g + 4.8, g + 5.25, 0.95, 0.46, ang, sand))  # cabeza
-        for off, zz in ((-0.95, -0.28), (-0.95, 0.28), (0.85, -0.28), (0.85, 0.28)):
-            P.append(box_at(hx_ + tx * off + ca * zz, hz_ + tz * off + sa * zz, g + 3.0, g + 3.6, 0.2, 0.2, ang, light))   # patas
+        P.append(box_at(hx_ + tx * 0.3, hz_ + tz * 0.3, g + 2.3, g + 3.0, 4.0, 1.7, ang, dark))
+        P += horse_at(hx_, hz_, g + 3.0, ang, 1.05, sand, dark)
     P.append(box_at(cx, cz, g + 2.3, g + 4.7, 4.6, 4.6, 0, dark))                               # zócalo de la torre
     for sx in (-1, 1):
         for sz in (-1, 1):
